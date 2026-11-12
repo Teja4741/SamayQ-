@@ -39,6 +39,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [countryCode, setCountryCode] = useState("+91");
+
   const [role, setRole] = useState<StaffRole>("receptionist");
 
   const [selectedScreens, setSelectedScreens] = useState<string[]>([
@@ -150,7 +151,8 @@ export default function TeamManagementClient({ clinicId }: Props) {
     };
   }, [clinicId]);
 
-  // Filter doctors based on selected departments.
+  // Display all doctors if no department is selected.
+  // Otherwise display only doctors assigned to selected departments.
   const visibleDoctors = useMemo(() => {
     if (selectedDepartments.length === 0) {
       return doctors;
@@ -163,6 +165,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
     );
   }, [doctors, selectedDepartments]);
 
+  // Common selection toggle.
   function toggleValue(
     value: string,
     current: string[],
@@ -175,7 +178,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
     );
   }
 
-  // Department selection also removes doctors no longer visible.
+  // Department selection also removes doctors that are no longer visible.
   function handleDepartmentToggle(departmentId: string) {
     const nextDepartments = selectedDepartments.includes(departmentId)
       ? selectedDepartments.filter((id) => id !== departmentId)
@@ -200,11 +203,13 @@ export default function TeamManagementClient({ clinicId }: Props) {
     );
   }
 
+  // Reset invitation form.
   function resetForm() {
     setName("");
     setEmail("");
     setPhone("");
     setCountryCode("+91");
+
     setRole("receptionist");
 
     setSelectedScreens(["waitlist", "reservations"]);
@@ -214,6 +219,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
     setSelectedDoctors([]);
   }
 
+  // Submit invitation.
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -222,18 +228,14 @@ export default function TeamManagementClient({ clinicId }: Props) {
     setNotice("");
     setInvitationLink("");
 
-    if (!name.trim()) {
-      setNoticeType("error");
-      setNotice("Enter the staff member's full name.");
-      return;
-    }
-
+    // Email is mandatory.
     if (!email.trim()) {
       setNoticeType("error");
       setNotice("Enter the staff member's email address.");
       return;
     }
 
+    // All three roles must have at least one screen.
     if (selectedScreens.length === 0) {
       setNoticeType("error");
       setNotice("Select at least one screen for this staff member.");
@@ -254,6 +256,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
       return;
     }
 
+    // Phone is optional.
     const fullPhone = phone.trim()
       ? `${countryCode}${phone.trim()}`
       : undefined;
@@ -294,6 +297,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
     }
   }
 
+  // Copy invitation link.
   async function copyInvitationLink() {
     if (!invitationLink) return;
 
@@ -338,14 +342,13 @@ export default function TeamManagementClient({ clinicId }: Props) {
                 htmlFor="staff-name"
                 className="block text-sm font-medium text-slate-700"
               >
-                Full name
+                Full name (Optional)
               </label>
 
               <input
                 id="staff-name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                required
                 maxLength={100}
                 placeholder="Enter full name"
                 className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
@@ -357,7 +360,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
                 htmlFor="staff-email"
                 className="block text-sm font-medium text-slate-700"
               >
-                Email address
+                Email address *
               </label>
 
               <input
@@ -377,7 +380,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
                 htmlFor="staff-phone"
                 className="block text-sm font-medium text-slate-700"
               >
-                Phone number
+                Phone number (Optional)
               </label>
 
               <div className="mt-2 flex gap-2">
@@ -467,8 +470,8 @@ export default function TeamManagementClient({ clinicId }: Props) {
           </div>
 
           <p className="mt-3 text-xs text-slate-400">
-            These permissions apply to Administrator, Receptionist and Doctor
-            accounts.
+            Screen permissions are available for Administrator, Receptionist
+            and Doctor accounts.
           </p>
         </section>
 

@@ -22,7 +22,7 @@ const allowedScreens = [
 
 type InvitationInput = {
   clinicId: string;
-  fullName: string;
+  fullName?: string;
   email: string;
   phone?: string;
   role: StaffRole;
@@ -49,7 +49,7 @@ export async function sendTeamInvitation(
 ): Promise<InvitationResult> {
   try {
     const clinicId = input.clinicId?.trim();
-    const fullName = input.fullName?.trim();
+    const fullName = input.fullName?.trim() || null;
     const email = input.email?.trim().toLowerCase();
     const phone = input.phone?.trim() || null;
     const role = input.role;
@@ -58,10 +58,12 @@ export async function sendTeamInvitation(
       return { success: false, message: "Invalid clinic." };
     }
 
-    if (!fullName || fullName.length > 100) {
-      return { success: false, message: "Enter a valid full name." };
+    // Full name is optional.
+    if (fullName && fullName.length > 100) {
+      return { success: false, message: "Full name is too long." };
     }
 
+    // Email is mandatory.
     if (
       !email ||
       email.length > 254 ||
@@ -70,6 +72,7 @@ export async function sendTeamInvitation(
       return { success: false, message: "Enter a valid email address." };
     }
 
+    // Phone is optional.
     if (phone && phone.length > 25) {
       return { success: false, message: "Phone number is too long." };
     }
@@ -345,7 +348,7 @@ export async function sendTeamInvitation(
         options: {
           redirectTo,
           data: {
-            full_name: fullName,
+            ...(fullName ? { full_name: fullName } : {}),
           },
         },
       });
@@ -367,7 +370,7 @@ export async function sendTeamInvitation(
       `&token_hash=${encodeURIComponent(hashedToken)}` +
       `&type=invite`;
 
-    // Save invitation and all permissions.
+    // Save invitation and permissions.
     const expiresAt = new Date(
       Date.now() + 7 * 24 * 60 * 60 * 1000
     ).toISOString();
@@ -386,7 +389,7 @@ export async function sendTeamInvitation(
         token_hash: hashedToken,
         expires_at: expiresAt,
 
-        // Save permissions for ALL three roles.
+        // Permissions for all three roles.
         screen_permissions: uniqueScreens,
 
         department_ids: departmentIds,
@@ -417,7 +420,7 @@ export async function sendTeamInvitation(
           user_id: publicKey,
           accessToken: privateKey,
           template_params: {
-            to_name: fullName,
+            to_name: fullName || "Staff Member",
             to_email: email,
             clinic_name: clinic.name,
             staff_role: role,
