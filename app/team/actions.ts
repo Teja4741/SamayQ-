@@ -83,18 +83,19 @@ export async function sendTeamInvitation(
     const doctorIds = [...new Set(input.doctorIds ?? [])];
     const restrictDoctors = input.restrictDoctors === true;
 
+    // Validate screen permissions for ALL three roles.
     if (
+      uniqueScreens.length === 0 ||
       uniqueScreens.some(
-        (screen) => !allowedScreens.includes(screen as (typeof allowedScreens)[number])
+        (screen) =>
+          !allowedScreens.includes(
+            screen as (typeof allowedScreens)[number]
+          )
       )
     ) {
-      return { success: false, message: "Invalid screen permission." };
-    }
-
-    if (role === "receptionist" && uniqueScreens.length === 0) {
       return {
         success: false,
-        message: "Select at least one screen for the receptionist.",
+        message: "Select at least one valid screen permission.",
       };
     }
 
@@ -111,19 +112,22 @@ export async function sendTeamInvitation(
     if (restrictDoctors && doctorIds.length === 0) {
       return {
         success: false,
-        message: "Select at least one doctor when doctor restriction is enabled.",
+        message:
+          "Select at least one doctor when doctor restriction is enabled.",
       };
     }
 
     if (!restrictDoctors && doctorIds.length > 0) {
       return {
         success: false,
-        message: "Disable doctor restriction or clear the selected doctors.",
+        message:
+          "Disable doctor restriction or clear the selected doctors.",
       };
     }
 
-    // Verify the logged-in inviter.
+    // Verify logged-in inviter.
     const supabase = await createClient();
+
     const {
       data: { user },
       error: authError,
@@ -147,6 +151,7 @@ export async function sendTeamInvitation(
 
     if (platformError) {
       console.error("Platform admin lookup:", platformError);
+
       return {
         success: false,
         message: "Unable to verify your permissions.",
@@ -166,12 +171,13 @@ export async function sendTeamInvitation(
       if (membershipError || !membership) {
         return {
           success: false,
-          message: "You are not authorized to invite staff to this clinic.",
+          message:
+            "You are not authorized to invite staff to this clinic.",
         };
       }
     }
 
-    // Verify the clinic.
+    // Verify clinic.
     const { data: clinic, error: clinicError } = await admin
       .from("clinics")
       .select("id, name, is_active")
@@ -180,6 +186,7 @@ export async function sendTeamInvitation(
 
     if (clinicError) {
       console.error("Clinic lookup:", clinicError);
+
       return {
         success: false,
         message: "Unable to verify the clinic.",
@@ -193,7 +200,7 @@ export async function sendTeamInvitation(
       };
     }
 
-    // Read the actual booking configuration.
+    // Read actual clinic booking configuration.
     const { data: clinicSettings, error: settingsError } = await admin
       .from("clinic_settings")
       .select(
@@ -204,20 +211,25 @@ export async function sendTeamInvitation(
 
     if (settingsError || !clinicSettings) {
       console.error("Clinic settings lookup:", settingsError);
+
       return {
         success: false,
         message: "Clinic booking settings could not be loaded.",
       };
     }
 
-    if (role === "doctor" && clinicSettings.doctor_booking_enabled !== true) {
+    // Doctor invitation must be enabled in clinic settings.
+    if (
+      role === "doctor" &&
+      clinicSettings.doctor_booking_enabled !== true
+    ) {
       return {
         success: false,
         message: "Doctor invitations are disabled for this clinic.",
       };
     }
 
-    // Verify every selected department belongs to this clinic.
+    // Verify selected departments belong to this clinic.
     if (departmentIds.length > 0) {
       const { data: departments, error: departmentError } = await admin
         .from("departments")
@@ -283,6 +295,7 @@ export async function sendTeamInvitation(
 
     if (existingError) {
       console.error("Existing invitation lookup:", existingError);
+
       return {
         success: false,
         message: "Unable to check existing invitations.",
@@ -292,7 +305,8 @@ export async function sendTeamInvitation(
     if (existingInvitation) {
       return {
         success: false,
-        message: "A pending invitation already exists for this email.",
+        message:
+          "A pending invitation already exists for this email.",
       };
     }
 
@@ -304,6 +318,7 @@ export async function sendTeamInvitation(
 
     if (!serviceId || !templateId || !publicKey || !privateKey) {
       console.error("EmailJS environment variables are missing.");
+
       return {
         success: false,
         message: "Invitation email service is not configured.",
@@ -316,10 +331,11 @@ export async function sendTeamInvitation(
 
     const invitationId = crypto.randomUUID();
 
-    const acceptPath = `/auth/accept-invitation?invitationId=${invitationId}`;
-    const redirectTo = `${siteUrl}/auth/confirm?next=${encodeURIComponent(
-      acceptPath
-    )}`;
+    const acceptPath =
+      `/auth/accept-invitation?invitationId=${invitationId}`;
+
+    const redirectTo =
+      `${siteUrl}/auth/confirm?next=${encodeURIComponent(acceptPath)}`;
 
     // Generate Supabase invite token.
     const { data: generated, error: generateError } =
@@ -336,6 +352,7 @@ export async function sendTeamInvitation(
 
     if (generateError || !generated?.properties?.hashed_token) {
       console.error("Invite link generation:", generateError);
+
       return {
         success: false,
         message: "Could not generate the invitation link.",
@@ -350,7 +367,7 @@ export async function sendTeamInvitation(
       `&token_hash=${encodeURIComponent(hashedToken)}` +
       `&type=invite`;
 
-    // Save invitation and its restrictions.
+    // Save invitation and all permissions.
     const expiresAt = new Date(
       Date.now() + 7 * 24 * 60 * 60 * 1000
     ).toISOString();
@@ -368,8 +385,10 @@ export async function sendTeamInvitation(
         status: "pending",
         token_hash: hashedToken,
         expires_at: expiresAt,
-        screen_permissions:
-          role === "receptionist" ? uniqueScreens : [],
+
+        // Save permissions for ALL three roles.
+        screen_permissions: uniqueScreens,
+
         department_ids: departmentIds,
         restrict_doctors: restrictDoctors,
         doctor_ids: restrictDoctors ? doctorIds : [],
@@ -377,6 +396,7 @@ export async function sendTeamInvitation(
 
     if (insertError) {
       console.error("Invitation insert:", insertError);
+
       return {
         success: false,
         message: "Could not save the invitation.",
@@ -409,6 +429,7 @@ export async function sendTeamInvitation(
 
     if (!emailResponse.ok) {
       const emailError = await emailResponse.text();
+
       console.error("EmailJS error:", emailError);
 
       await admin
@@ -433,7 +454,8 @@ export async function sendTeamInvitation(
 
     return {
       success: false,
-      message: "Something went wrong while sending the invitation.",
+      message:
+        "Something went wrong while sending the invitation.",
     };
   }
 }

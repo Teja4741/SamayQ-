@@ -49,9 +49,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
 
-  const [selectedDepartments, setSelectedDepartments] = useState<string[]>(
-    []
-  );
+  const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
 
   const [restrictDoctors, setRestrictDoctors] = useState(false);
   const [selectedDoctors, setSelectedDoctors] = useState<string[]>([]);
@@ -152,8 +150,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
     };
   }, [clinicId]);
 
-  // Display all doctors if no department is selected.
-  // Otherwise display only doctors assigned to selected departments.
+  // Filter doctors based on selected departments.
   const visibleDoctors = useMemo(() => {
     if (selectedDepartments.length === 0) {
       return doctors;
@@ -166,7 +163,6 @@ export default function TeamManagementClient({ clinicId }: Props) {
     );
   }, [doctors, selectedDepartments]);
 
-  // Common selection toggle.
   function toggleValue(
     value: string,
     current: string[],
@@ -179,7 +175,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
     );
   }
 
-  // Department selection also removes doctors that are no longer visible.
+  // Department selection also removes doctors no longer visible.
   function handleDepartmentToggle(departmentId: string) {
     const nextDepartments = selectedDepartments.includes(departmentId)
       ? selectedDepartments.filter((id) => id !== departmentId)
@@ -191,12 +187,10 @@ export default function TeamManagementClient({ clinicId }: Props) {
       currentDoctors.filter((doctorId) => {
         const doctor = doctors.find((item) => item.id === doctorId);
 
-        // No selected departments means all departments are allowed.
         if (nextDepartments.length === 0) {
           return true;
         }
 
-        // Retain only doctors belonging to at least one selected department.
         return Boolean(
           doctor?.departmentIds.some((id) =>
             nextDepartments.includes(id)
@@ -206,7 +200,6 @@ export default function TeamManagementClient({ clinicId }: Props) {
     );
   }
 
-  // Reset invitation form.
   function resetForm() {
     setName("");
     setEmail("");
@@ -221,7 +214,6 @@ export default function TeamManagementClient({ clinicId }: Props) {
     setSelectedDoctors([]);
   }
 
-  // Submit invitation.
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -242,9 +234,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
       return;
     }
 
-    if (role === "receptionist" && selectedScreens.length === 0) {
+    if (selectedScreens.length === 0) {
       setNoticeType("error");
-      setNotice("Select at least one screen.");
+      setNotice("Select at least one screen for this staff member.");
       return;
     }
 
@@ -275,8 +267,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
         email: email.trim(),
         phone: fullPhone,
         role,
-        screenPermissions:
-          role === "receptionist" ? selectedScreens : [],
+        screenPermissions: selectedScreens,
         departmentIds: selectedDepartments,
         restrictDoctors,
         doctorIds: restrictDoctors ? selectedDoctors : [],
@@ -303,7 +294,6 @@ export default function TeamManagementClient({ clinicId }: Props) {
     }
   }
 
-  // Copy invitation link.
   async function copyInvitationLink() {
     if (!invitationLink) return;
 
@@ -427,15 +417,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
                 id="staff-role"
                 value={role}
                 onChange={(event) => {
-                  const nextRole = event.target.value as StaffRole;
-
-                  setRole(nextRole);
-
-                  if (nextRole !== "receptionist") {
-                    setSelectedScreens([]);
-                  } else {
-                    setSelectedScreens(["waitlist", "reservations"]);
-                  }
+                  setRole(event.target.value as StaffRole);
                 }}
                 className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500"
               >
@@ -457,24 +439,18 @@ export default function TeamManagementClient({ clinicId }: Props) {
           </h2>
 
           <p className="mt-1 text-sm text-slate-500">
-            Select the screens this staff member can access. These selections
-            are saved for receptionist accounts.
+            Select the screens this staff member can access.
           </p>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {screenOptions.map((screen) => (
               <label
                 key={screen.id}
-                className={`flex items-center gap-3 rounded-lg border p-3 text-sm ${
-                  role !== "receptionist"
-                    ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-400"
-                    : "cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
-                }`}
+                className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 text-sm text-slate-700 hover:bg-slate-50"
               >
                 <input
                   type="checkbox"
                   checked={selectedScreens.includes(screen.id)}
-                  disabled={role !== "receptionist"}
                   onChange={() =>
                     toggleValue(
                       screen.id,
@@ -490,12 +466,10 @@ export default function TeamManagementClient({ clinicId }: Props) {
             ))}
           </div>
 
-          {role !== "receptionist" && (
-            <p className="mt-3 text-xs text-slate-400">
-              Screen-level permissions are currently configured for
-              receptionists only.
-            </p>
-          )}
+          <p className="mt-3 text-xs text-slate-400">
+            These permissions apply to Administrator, Receptionist and Doctor
+            accounts.
+          </p>
         </section>
 
         <div className="border-t border-slate-100" />
@@ -532,9 +506,7 @@ export default function TeamManagementClient({ clinicId }: Props) {
                   <input
                     type="checkbox"
                     checked={selectedDepartments.includes(department.id)}
-                    onChange={() =>
-                      handleDepartmentToggle(department.id)
-                    }
+                    onChange={() => handleDepartmentToggle(department.id)}
                     className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                   />
 
@@ -550,17 +522,15 @@ export default function TeamManagementClient({ clinicId }: Props) {
         {/* DOCTOR ACCESS */}
 
         <section>
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">
-              Doctor access
-            </h2>
+          <h2 className="text-base font-semibold text-slate-900">
+            Doctor access
+          </h2>
 
-            <p className="mt-1 text-sm text-slate-500">
-              Enable this option to allow access only to selected doctors.
-              When disabled, all doctors within the permitted department
-              scope are available.
-            </p>
-          </div>
+          <p className="mt-1 text-sm text-slate-500">
+            Enable this option to allow access only to selected doctors.
+            When disabled, all doctors within the permitted department
+            scope are available.
+          </p>
 
           <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-4">
             <input
@@ -690,9 +660,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
 
         <p className="text-xs leading-5 text-slate-400">
           Invitation links expire after 7 days. Screen permissions,
-          department restrictions and doctor restrictions are saved when the
-          invited user accepts the invitation. An invitation email is sent
-          through EmailJS.
+          department restrictions and doctor restrictions are saved when
+          the invited user accepts the invitation. An invitation email is
+          sent through EmailJS.
         </p>
       </form>
     </main>
