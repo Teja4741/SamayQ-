@@ -10,6 +10,8 @@ type PageProps = {
   searchParams: Promise<{ clinicId?: string }>;
 };
 
+type NavbarRole = "master_admin" | "clinic_admin" | "receptionist";
+
 type ClinicSettings = {
   clinic_id: string;
   booking_mode: "doctor" | "department" | "custom";
@@ -59,7 +61,7 @@ export default async function SettingsPage({
   const params = await searchParams;
   const requestedClinicId = params.clinicId;
 
-  // Check platform administrator access
+  // Check platform administrator access.
   const { data: adminRecord, error: adminError } = await supabase
     .from("platform_admins")
     .select("user_id")
@@ -76,7 +78,7 @@ export default async function SettingsPage({
 
   const isPlatformAdmin = Boolean(adminRecord);
 
-  // Check clinic memberships
+  // Load all active clinic memberships for this user.
   const { data: memberships, error: membershipError } =
     await supabase
       .from("clinic_memberships")
@@ -121,10 +123,39 @@ export default async function SettingsPage({
       clinicId = requestedClinicId;
     } else if (allowedClinicIds.length === 1) {
       clinicId = allowedClinicIds[0];
+    } else {
+      return (
+        <main className="p-6">
+          <Navbar
+            email={user.email ?? undefined}
+            role="clinic_admin"
+          />
+          <div className="mx-auto max-w-5xl p-6">
+            <h1 className="text-xl font-semibold">
+              Select a clinic
+            </h1>
+            <p className="mt-2 text-sm text-slate-500">
+              Your account belongs to multiple clinics.
+              Please select a clinic to manage its settings.
+            </p>
+          </div>
+        </main>
+      );
     }
   }
 
-  // Load available clinics, including their individual public booking settings
+  // Determine the actual Navbar role for the selected clinic.
+  const selectedMembership = memberships?.find(
+    (membership) => membership.clinic_id === clinicId
+  );
+
+  const navbarRole: NavbarRole = isPlatformAdmin
+    ? "master_admin"
+    : selectedMembership?.role === "receptionist"
+      ? "receptionist"
+      : "clinic_admin";
+
+  // Load available clinics.
   let clinicQuery = supabase
     .from("clinics")
     .select(
@@ -144,9 +175,15 @@ export default async function SettingsPage({
     console.error("Clinic loading error:", clinicsError);
 
     return (
-      <main className="p-6">
-        Unable to load clinics.
-      </main>
+      <>
+        <Navbar
+          email={user.email ?? undefined}
+          role={navbarRole}
+        />
+        <main className="p-6">
+          Unable to load clinics.
+        </main>
+      </>
     );
   }
 
@@ -158,13 +195,19 @@ export default async function SettingsPage({
 
   if (clinicId && !selectedClinic) {
     return (
-      <main className="p-6">
-        Clinic not found or access denied.
-      </main>
+      <>
+        <Navbar
+          email={user.email ?? undefined}
+          role={navbarRole}
+        />
+        <main className="p-6">
+          Clinic not found or access denied.
+        </main>
+      </>
     );
   }
 
-  // Initial data
+  // Initial data.
   let departments: {
     id: string;
     name: string;
@@ -176,7 +219,7 @@ export default async function SettingsPage({
   let initialCapacityRules: RegistrationCapacityRule[] = [];
 
   if (clinicId) {
-    // Load departments
+    // Load departments.
     const { data, error } = await supabase
       .from("departments")
       .select("id, name, is_active")
@@ -186,7 +229,10 @@ export default async function SettingsPage({
     if (error) {
       return (
         <>
-          <Navbar email={user.email ?? undefined} />
+          <Navbar
+            email={user.email ?? undefined}
+            role={navbarRole}
+          />
           <main className="mx-auto max-w-7xl p-6">
             Unable to load departments. Check your departments table permissions.
           </main>
@@ -196,7 +242,7 @@ export default async function SettingsPage({
 
     departments = data ?? [];
 
-    // Load clinic feature settings
+    // Load clinic feature settings.
     const { data: settingsData, error: settingsError } =
       await supabase
         .from("clinic_settings")
@@ -214,7 +260,10 @@ export default async function SettingsPage({
 
       return (
         <>
-          <Navbar email={user.email ?? undefined} />
+          <Navbar
+            email={user.email ?? undefined}
+            role={navbarRole}
+          />
           <main className="mx-auto max-w-7xl p-6">
             <h1 className="text-xl font-semibold">
               Unable to load clinic feature flags.
@@ -229,7 +278,7 @@ export default async function SettingsPage({
 
     initialSettings = settingsData as ClinicSettings | null;
 
-    // Load registration capacity rules
+    // Load registration capacity rules.
     const { data: capacityData, error: capacityError } =
       await supabase
         .from("registration_capacity_rules")
@@ -244,7 +293,10 @@ export default async function SettingsPage({
 
       return (
         <>
-          <Navbar email={user.email ?? undefined} />
+          <Navbar
+            email={user.email ?? undefined}
+            role={navbarRole}
+          />
           <main className="mx-auto max-w-7xl p-6">
             <h1 className="text-xl font-semibold">
               Unable to load registration capacity settings.
@@ -263,7 +315,10 @@ export default async function SettingsPage({
 
   return (
     <>
-      <Navbar email={user.email ?? undefined} />
+      <Navbar
+        email={user.email ?? undefined}
+        role={navbarRole}
+      />
 
       <SettingsClient
         clinics={availableClinics}

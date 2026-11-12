@@ -13,13 +13,17 @@ type DoctorsPageProps = {
   searchParams: SearchParams;
 };
 
+type PageRole =
+  | "master_admin"
+  | "clinic_admin"
+  | "receptionist";
+
 async function DoctorsPageContent({
   searchParams,
 }: DoctorsPageProps) {
-  // 1. Create Supabase client
   const supabase = await createClient();
 
-  // 2. Authenticate user
+  // Authenticate user.
   const {
     data: { user },
     error: authError,
@@ -29,7 +33,7 @@ async function DoctorsPageContent({
     redirect("/auth/login");
   }
 
-  // 3. Check Master Admin access
+  // Check Master Admin access.
   const {
     data: platformAdmin,
     error: adminError,
@@ -52,7 +56,7 @@ async function DoctorsPageContent({
     );
   }
 
-  // 4. Read selected clinic from URL
+  // Read selected clinic from URL.
   const params = await searchParams;
 
   const selectedClinicId =
@@ -60,10 +64,10 @@ async function DoctorsPageContent({
       ? params.clinicId
       : undefined;
 
-  let role: "master_admin" | "clinic_admin" = "clinic_admin";
+  let role: PageRole = "clinic_admin";
   let clinicId: string | null = null;
 
-  // 5. Resolve clinic access
+  // Resolve clinic access.
   if (platformAdmin) {
     role = "master_admin";
 
@@ -71,22 +75,31 @@ async function DoctorsPageContent({
       clinicId = selectedClinicId;
     }
   } else {
-    // Clinic Admin
+    // Allow active Clinic Admin and Receptionist memberships.
     const {
       data: memberships,
       error: membershipError,
     } = await supabase
       .from("clinic_memberships")
-      .select("clinic_id")
+      .select("clinic_id, role")
       .eq("user_id", user.id)
-      .eq("role", "administrator")
+      .in("role", ["administrator", "receptionist"])
       .eq("is_active", true);
 
-    if (
-      membershipError ||
-      !memberships ||
-      memberships.length !== 1
-    ) {
+    if (membershipError) {
+      console.error(
+        "Clinic membership loading failed:",
+        membershipError
+      );
+
+      return (
+        <main className="p-8">
+          Unable to verify clinic membership.
+        </main>
+      );
+    }
+
+    if (!memberships || memberships.length === 0) {
       return (
         <main className="p-8">
           <h1 className="text-xl font-semibold">
@@ -94,16 +107,37 @@ async function DoctorsPageContent({
           </h1>
 
           <p className="mt-2 text-slate-500">
-            An active clinic administrator membership is required.
+            An active clinic administrator or receptionist
+            membership is required.
+          </p>
+        </main>
+      );
+    }
+
+    if (memberships.length > 1) {
+      return (
+        <main className="p-8">
+          <h1 className="text-xl font-semibold">
+            Multiple clinic memberships found
+          </h1>
+
+          <p className="mt-2 text-slate-500">
+            Please use the correct clinic selection before
+            accessing doctors management.
           </p>
         </main>
       );
     }
 
     clinicId = memberships[0].clinic_id;
+
+    role =
+      memberships[0].role === "receptionist"
+        ? "receptionist"
+        : "clinic_admin";
   }
 
-  // 6. Render clinic selection for Master Admin
+  // Render clinic selection for Master Admin.
   if (!clinicId) {
     return (
       <>
@@ -128,7 +162,7 @@ async function DoctorsPageContent({
     );
   }
 
-  // 7. Fetch clinic details
+  // Fetch clinic details.
   const {
     data: clinic,
     error: clinicError,
@@ -146,19 +180,26 @@ async function DoctorsPageContent({
     console.error("Clinic loading failed:", clinicError);
 
     return (
-      <main className="p-8">
-        <h1 className="text-xl font-semibold">
-          Clinic unavailable
-        </h1>
+      <>
+        <Navbar
+          email={user.email ?? undefined}
+          role={role}
+        />
 
-        <p className="mt-2 text-slate-500">
-          The selected clinic does not exist or is inactive.
-        </p>
-      </main>
+        <main className="p-8">
+          <h1 className="text-xl font-semibold">
+            Clinic unavailable
+          </h1>
+
+          <p className="mt-2 text-slate-500">
+            The selected clinic does not exist or is inactive.
+          </p>
+        </main>
+      </>
     );
   }
 
-  // 8. Fetch booking configuration from clinic_settings
+  // Fetch booking configuration.
   const {
     data: settings,
     error: settingsError,
@@ -198,7 +239,7 @@ async function DoctorsPageContent({
     );
   }
 
-  // 9. Determine the effective booking model
+  // Determine the effective booking model.
   const bookingMode = settings?.booking_mode ?? null;
 
   const isDoctorBookingEnabled =
@@ -211,7 +252,7 @@ async function DoctorsPageContent({
 
   const isConfigured = Boolean(settings);
 
-  // 10. Render page
+  // Render page.
   return (
     <main className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-sky-50 text-slate-900 dark:from-slate-950 dark:via-slate-950 dark:to-slate-900 dark:text-slate-100">
 
@@ -221,7 +262,6 @@ async function DoctorsPageContent({
       />
 
       {!isConfigured ? (
-        // Configuration missing
         <div className="mx-auto max-w-5xl px-5 py-8">
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-900 dark:bg-amber-950/30">
             <h1 className="text-xl font-semibold">
@@ -235,7 +275,6 @@ async function DoctorsPageContent({
           </section>
         </div>
       ) : !isDoctorBookingEnabled ? (
-        // Department-wise clinic restriction
         <div className="mx-auto max-w-5xl px-5 py-8">
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-900 dark:bg-amber-950/30">
             <h1 className="text-xl font-semibold">
@@ -250,7 +289,6 @@ async function DoctorsPageContent({
           </section>
         </div>
       ) : (
-        // Doctor-wise clinic
         <DoctorsClient
           clinicId={clinic.id}
           clinicName={clinic.name}
@@ -260,7 +298,6 @@ async function DoctorsPageContent({
   );
 }
 
-// 11. Suspense boundary
 export default function DoctorsPage({
   searchParams,
 }: DoctorsPageProps) {

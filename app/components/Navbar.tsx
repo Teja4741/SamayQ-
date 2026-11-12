@@ -64,7 +64,6 @@ const navigationByRole: Record<Role, MenuItem[]> = {
         { label: "Patients", href: "/patients", icon: "patients" },
     ],
 
-    // Clinic Admin dashboard is handled by app/page.tsx
     clinic_admin: [
         { label: "Dashboard", href: "/", icon: "dashboard" },
         { label: "Queue", href: "/queues", icon: "queue" },
@@ -74,7 +73,6 @@ const navigationByRole: Record<Role, MenuItem[]> = {
         { label: "Team", href: "/team", icon: "team" },
     ],
 
-    // Receptionist dashboard is also handled by app/page.tsx
     receptionist: [
         { label: "Dashboard", href: "/", icon: "dashboard" },
         { label: "Queue", href: "/queues", icon: "queue" },
@@ -114,6 +112,7 @@ const profileByRole: Record<Role, MenuItem[]> = {
 
     receptionist: [
         { label: "History", href: "/history", icon: "history" },
+        { label: "Settings", href: "/settings", icon: "settings" },
         { label: "Account", href: "/account", icon: "account" },
         { label: "Password", href: "/password", icon: "password" },
     ],
@@ -357,9 +356,9 @@ export default function Navbar({
         };
     }, [role]);
 
-    // Load booking mode for Clinic Admin.
+    // Load booking mode for Clinic Admin and Receptionist.
     useEffect(() => {
-        if (role !== "clinic_admin") return;
+        if (role !== "clinic_admin" && role !== "receptionist") return;
 
         let cancelled = false;
 
@@ -380,7 +379,7 @@ export default function Navbar({
                         .from("clinic_memberships")
                         .select("clinic_id")
                         .eq("user_id", user.id)
-                        .eq("role", "administrator")
+                        .in("role", ["administrator", "receptionist"])
                         .eq("is_active", true)
                         .limit(1)
                         .maybeSingle();
@@ -399,11 +398,10 @@ export default function Navbar({
                     .maybeSingle();
 
                 if (settingsError) throw settingsError;
-                if (!settings) throw new Error("Clinic settings not found.");
 
                 if (!cancelled) {
                     setClinicBookingMode(
-                        normalizeBookingMode(settings.booking_mode)
+                        normalizeBookingMode(settings?.booking_mode)
                     );
                 }
             } catch (error) {
@@ -547,7 +545,7 @@ export default function Navbar({
     const selectedBookingMode: BookingMode | null =
         role === "master_admin"
             ? masterClinicBookingMode
-            : role === "clinic_admin"
+            : role === "clinic_admin" || role === "receptionist"
                 ? clinicBookingMode
                 : null;
 
@@ -573,7 +571,7 @@ export default function Navbar({
     );
 
     const mainNavigation: MenuItem[] =
-        role === "clinic_admin"
+        role === "clinic_admin" || role === "receptionist"
             ? [
                 ...clinicAdminNavigation.slice(0, -1),
                 ...(managementItem ? [managementItem] : []),
@@ -587,12 +585,16 @@ export default function Navbar({
                 ...(selectedClinic && managementItem ? [managementItem] : []),
                 ...profileByRole.master_admin,
             ]
-            : profileByRole[role];
+            : role === "receptionist"
+                ? [
+                    ...(managementItem ? [managementItem] : []),
+                    ...profileByRole.receptionist,
+                ]
+                : profileByRole[role];
 
     return (
         <>
             <header className="relative z-30 w-full bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-                {/* Main navigation */}
                 <div className="mx-auto flex min-h-[72px] w-full max-w-[1440px] items-center justify-between gap-3 px-5 lg:px-6">
                     <Link
                         href={getNavigationHref(
@@ -736,7 +738,6 @@ export default function Navbar({
                     </div>
                 </div>
 
-                {/* Clinic selector: Master Admin only */}
                 {role === "master_admin" && (
                     <div className="w-full bg-white dark:bg-slate-950">
                         <div className="mx-auto flex min-h-[64px] w-full max-w-[1440px] items-center gap-3 px-5 py-2 lg:px-6">
