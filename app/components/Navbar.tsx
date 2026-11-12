@@ -55,6 +55,7 @@ type NavbarProps = {
     role?: Role;
 };
 
+// Core navigation pages are available to EVERY role.
 const navigationByRole: Record<Role, MenuItem[]> = {
     master_admin: [
         { label: "Dashboard", href: "/", icon: "dashboard" },
@@ -86,6 +87,7 @@ const navigationByRole: Record<Role, MenuItem[]> = {
         { label: "Dashboard", href: "/doctor-dashboard", icon: "dashboard" },
         { label: "Queue", href: "/queues", icon: "queue" },
         { label: "Appointments", href: "/appointments", icon: "calendar" },
+        { label: "Rooms", href: "/rooms", icon: "rooms" },
         { label: "Patients", href: "/patients", icon: "patients" },
     ],
 };
@@ -612,6 +614,7 @@ export default function Navbar({
                         className="hidden items-center gap-1 lg:flex"
                     >
                         {mainNavigation.map((item) => {
+                            // Compare pathname only, ignoring query parameters.
                             const active = pathname === item.href;
 
                             return (

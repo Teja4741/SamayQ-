@@ -50,7 +50,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
 
-  const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
+  const [selectedDepartments, setSelectedDepartments] = useState<string[]>(
+    []
+  );
 
   const [restrictDoctors, setRestrictDoctors] = useState(false);
   const [selectedDoctors, setSelectedDoctors] = useState<string[]>([]);
@@ -60,10 +62,12 @@ export default function TeamManagementClient({ clinicId }: Props) {
 
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
-  const [noticeType, setNoticeType] = useState<"success" | "error">("success");
+  const [noticeType, setNoticeType] = useState<"success" | "error">(
+    "success"
+  );
   const [invitationLink, setInvitationLink] = useState("");
 
-  // Load active departments and doctors belonging to this clinic.
+  // Load active departments and doctors assigned to this clinic.
   useEffect(() => {
     let cancelled = false;
 
@@ -74,33 +78,42 @@ export default function TeamManagementClient({ clinicId }: Props) {
       try {
         const supabase = createClient();
 
-        const { data: departmentRows, error: departmentError } =
-          await supabase
-            .from("departments")
-            .select("id, name")
-            .eq("clinic_id", clinicId)
-            .eq("is_active", true)
-            .order("name");
+        const {
+          data: departmentRows,
+          error: departmentError,
+        } = await supabase
+          .from("departments")
+          .select("id, name")
+          .eq("clinic_id", clinicId)
+          .eq("is_active", true)
+          .order("name");
 
         if (departmentError) throw departmentError;
 
-        const { data: assignments, error: assignmentError } =
-          await supabase
-            .from("doctor_clinic_assignments")
-            .select("doctor_id, department_id")
-            .eq("clinic_id", clinicId)
-            .eq("is_active", true);
+        const {
+          data: assignments,
+          error: assignmentError,
+        } = await supabase
+          .from("doctor_clinic_assignments")
+          .select("doctor_id, department_id")
+          .eq("clinic_id", clinicId)
+          .eq("is_active", true);
 
         if (assignmentError) throw assignmentError;
 
         const doctorIds = [
-          ...new Set((assignments ?? []).map((item) => item.doctor_id)),
+          ...new Set(
+            (assignments ?? []).map((item) => item.doctor_id)
+          ),
         ];
 
         let doctorRows: { id: string; full_name: string }[] = [];
 
         if (doctorIds.length > 0) {
-          const { data, error } = await supabase
+          const {
+            data,
+            error,
+          } = await supabase
             .from("doctors")
             .select("id, full_name")
             .eq("is_active", true)
@@ -118,7 +131,10 @@ export default function TeamManagementClient({ clinicId }: Props) {
           departmentIds: [
             ...new Set(
               (assignments ?? [])
-                .filter((assignment) => assignment.doctor_id === doctor.id)
+                .filter(
+                  (assignment) =>
+                    assignment.doctor_id === doctor.id
+                )
                 .map((assignment) => assignment.department_id)
                 .filter((id): id is string => Boolean(id))
             ),
@@ -151,8 +167,8 @@ export default function TeamManagementClient({ clinicId }: Props) {
     };
   }, [clinicId]);
 
-  // Display all doctors if no department is selected.
-  // Otherwise display only doctors assigned to selected departments.
+  // Show all doctors if no department is selected.
+  // Otherwise show doctors assigned to selected departments.
   const visibleDoctors = useMemo(() => {
     if (selectedDepartments.length === 0) {
       return doctors;
@@ -178,6 +194,21 @@ export default function TeamManagementClient({ clinicId }: Props) {
     );
   }
 
+  // Change role and apply doctor-specific selection rules.
+  function handleRoleChange(nextRole: StaffRole) {
+    setRole(nextRole);
+
+    if (nextRole === "doctor") {
+      setRestrictDoctors(true);
+      setSelectedDoctors([]);
+      setName("");
+      setPhone("");
+    } else {
+      setRestrictDoctors(false);
+      setSelectedDoctors([]);
+    }
+  }
+
   // Department selection also removes doctors that are no longer visible.
   function handleDepartmentToggle(departmentId: string) {
     const nextDepartments = selectedDepartments.includes(departmentId)
@@ -188,7 +219,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
 
     setSelectedDoctors((currentDoctors) =>
       currentDoctors.filter((doctorId) => {
-        const doctor = doctors.find((item) => item.id === doctorId);
+        const doctor = doctors.find(
+          (item) => item.id === doctorId
+        );
 
         if (nextDepartments.length === 0) {
           return true;
@@ -200,6 +233,22 @@ export default function TeamManagementClient({ clinicId }: Props) {
           )
         );
       })
+    );
+  }
+
+  // Select a doctor.
+  function handleDoctorSelection(doctorId: string) {
+    if (role === "doctor") {
+      // Doctor login: exactly one existing doctor.
+      setSelectedDoctors([doctorId]);
+      return;
+    }
+
+    // Administrator/receptionist: multiple doctors allowed.
+    toggleValue(
+      doctorId,
+      selectedDoctors,
+      setSelectedDoctors
     );
   }
 
@@ -220,7 +269,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
   }
 
   // Submit invitation.
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
     if (sending) return;
@@ -228,21 +279,29 @@ export default function TeamManagementClient({ clinicId }: Props) {
     setNotice("");
     setInvitationLink("");
 
-    // Email is mandatory.
     if (!email.trim()) {
       setNoticeType("error");
       setNotice("Enter the staff member's email address.");
       return;
     }
 
-    // All three roles must have at least one screen.
     if (selectedScreens.length === 0) {
       setNoticeType("error");
       setNotice("Select at least one screen for this staff member.");
       return;
     }
 
-    if (restrictDoctors && selectedDoctors.length === 0) {
+    if (role === "doctor" && selectedDoctors.length !== 1) {
+      setNoticeType("error");
+      setNotice("Select exactly one doctor for this login.");
+      return;
+    }
+
+    if (
+      role !== "doctor" &&
+      restrictDoctors &&
+      selectedDoctors.length === 0
+    ) {
       setNoticeType("error");
       setNotice("Select at least one doctor.");
       return;
@@ -256,7 +315,12 @@ export default function TeamManagementClient({ clinicId }: Props) {
       return;
     }
 
-    // Phone is optional.
+    if (loadingOptions) {
+      setNoticeType("error");
+      setNotice("Please wait until doctor information has loaded.");
+      return;
+    }
+
     const fullPhone = phone.trim()
       ? `${countryCode}${phone.trim()}`
       : undefined;
@@ -266,14 +330,18 @@ export default function TeamManagementClient({ clinicId }: Props) {
 
       const result = await sendTeamInvitation({
         clinicId,
-        fullName: name.trim(),
+        fullName: role === "doctor" ? undefined : name.trim(),
         email: email.trim(),
-        phone: fullPhone,
+        phone: role === "doctor" ? undefined : fullPhone,
         role,
         screenPermissions: selectedScreens,
         departmentIds: selectedDepartments,
-        restrictDoctors,
-        doctorIds: restrictDoctors ? selectedDoctors : [],
+        restrictDoctors: role === "doctor" ? true : restrictDoctors,
+        doctorIds: role === "doctor"
+          ? selectedDoctors
+          : restrictDoctors
+            ? selectedDoctors
+            : [],
       });
 
       if (!result.success) {
@@ -320,8 +388,8 @@ export default function TeamManagementClient({ clinicId }: Props) {
         </h1>
 
         <p className="mt-2 text-sm text-slate-500">
-          Invite staff members and control which parts of your clinic they can
-          access.
+          Invite staff members and control which parts of your clinic
+          they can access.
         </p>
       </div>
 
@@ -337,23 +405,26 @@ export default function TeamManagementClient({ clinicId }: Props) {
           </h2>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div>
-              <label
-                htmlFor="staff-name"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Full name (Optional)
-              </label>
+            {/* Full name is not required for doctor invitations. */}
+            {role !== "doctor" && (
+              <div>
+                <label
+                  htmlFor="staff-name"
+                  className="block text-sm font-medium text-slate-700"
+                >
+                  Full name (Optional)
+                </label>
 
-              <input
-                id="staff-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                maxLength={100}
-                placeholder="Enter full name"
-                className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
-              />
-            </div>
+                <input
+                  id="staff-name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  maxLength={100}
+                  placeholder="Enter full name"
+                  className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+                />
+              </div>
+            )}
 
             <div>
               <label
@@ -375,38 +446,43 @@ export default function TeamManagementClient({ clinicId }: Props) {
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="staff-phone"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Phone number (Optional)
-              </label>
-
-              <div className="mt-2 flex gap-2">
-                <select
-                  value={countryCode}
-                  onChange={(event) => setCountryCode(event.target.value)}
-                  className="w-24 rounded-lg border border-slate-300 px-2 py-2.5 text-sm"
-                  aria-label="Country code"
+            {/* Phone is not required for doctor invitations. */}
+            {role !== "doctor" && (
+              <div>
+                <label
+                  htmlFor="staff-phone"
+                  className="block text-sm font-medium text-slate-700"
                 >
-                  <option value="+91">+91</option>
-                  <option value="+1">+1</option>
-                  <option value="+44">+44</option>
-                  <option value="+971">+971</option>
-                </select>
+                  Phone number (Optional)
+                </label>
 
-                <input
-                  id="staff-phone"
-                  type="tel"
-                  value={phone}
-                  onChange={(event) => setPhone(event.target.value)}
-                  maxLength={20}
-                  placeholder="Phone number"
-                  className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
-                />
+                <div className="mt-2 flex gap-2">
+                  <select
+                    value={countryCode}
+                    onChange={(event) =>
+                      setCountryCode(event.target.value)
+                    }
+                    className="w-24 rounded-lg border border-slate-300 px-2 py-2.5 text-sm"
+                    aria-label="Country code"
+                  >
+                    <option value="+91">+91</option>
+                    <option value="+1">+1</option>
+                    <option value="+44">+44</option>
+                    <option value="+971">+971</option>
+                  </select>
+
+                  <input
+                    id="staff-phone"
+                    type="tel"
+                    value={phone}
+                    onChange={(event) => setPhone(event.target.value)}
+                    maxLength={20}
+                    placeholder="Phone number"
+                    className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             <div>
               <label
@@ -419,9 +495,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
               <select
                 id="staff-role"
                 value={role}
-                onChange={(event) => {
-                  setRole(event.target.value as StaffRole);
-                }}
+                onChange={(event) =>
+                  handleRoleChange(event.target.value as StaffRole)
+                }
                 className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500"
               >
                 <option value="receptionist">Receptionist</option>
@@ -430,6 +506,14 @@ export default function TeamManagementClient({ clinicId }: Props) {
               </select>
             </div>
           </div>
+
+          {role === "doctor" && (
+            <p className="mt-3 rounded-lg bg-violet-50 p-3 text-sm text-violet-800">
+              Doctor login will be linked to the existing doctor you
+              select below. The existing doctor's name and phone details
+              will not be changed.
+            </p>
+          )}
         </section>
 
         <div className="border-t border-slate-100" />
@@ -470,8 +554,8 @@ export default function TeamManagementClient({ clinicId }: Props) {
           </div>
 
           <p className="mt-3 text-xs text-slate-400">
-            Screen permissions are available for Administrator, Receptionist
-            and Doctor accounts.
+            Screen permissions are available for Administrator,
+            Receptionist and Doctor accounts.
           </p>
         </section>
 
@@ -494,7 +578,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
               Loading departments and doctors...
             </p>
           ) : optionsError ? (
-            <p className="mt-4 text-sm text-red-600">{optionsError}</p>
+            <p className="mt-4 text-sm text-red-600">
+              {optionsError}
+            </p>
           ) : departments.length === 0 ? (
             <p className="mt-4 text-sm text-slate-500">
               No active departments are available for this clinic.
@@ -509,7 +595,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
                   <input
                     type="checkbox"
                     checked={selectedDepartments.includes(department.id)}
-                    onChange={() => handleDepartmentToggle(department.id)}
+                    onChange={() =>
+                      handleDepartmentToggle(department.id)
+                    }
                     className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                   />
 
@@ -529,39 +617,56 @@ export default function TeamManagementClient({ clinicId }: Props) {
             Doctor access
           </h2>
 
-          <p className="mt-1 text-sm text-slate-500">
-            Enable this option to allow access only to selected doctors.
-            When disabled, all doctors within the permitted department
-            scope are available.
-          </p>
+          {role === "doctor" ? (
+            <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50 p-4">
+              <p className="text-sm font-semibold text-violet-900">
+                Doctor-specific login
+              </p>
 
-          <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-4">
-            <input
-              type="checkbox"
-              checked={restrictDoctors}
-              onChange={(event) => {
-                setRestrictDoctors(event.target.checked);
+              <p className="mt-1 text-sm text-violet-700">
+                Select exactly one existing doctor. This email will
+                become that doctor's login.
+              </p>
+            </div>
+          ) : (
+            <>
+              <p className="mt-1 text-sm text-slate-500">
+                Enable this option to allow access only to selected
+                doctors. When disabled, all doctors within the permitted
+                department scope are available.
+              </p>
 
-                if (!event.target.checked) {
-                  setSelectedDoctors([]);
-                }
-              }}
-              className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
-            />
+              <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-4">
+                <input
+                  type="checkbox"
+                  checked={restrictDoctors}
+                  onChange={(event) => {
+                    setRestrictDoctors(event.target.checked);
 
-            <span className="text-sm font-medium text-slate-800">
-              Restrict access to selected doctors only
-            </span>
-          </label>
+                    if (!event.target.checked) {
+                      setSelectedDoctors([]);
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                />
 
-          {restrictDoctors && (
+                <span className="text-sm font-medium text-slate-800">
+                  Restrict access to selected doctors only
+                </span>
+              </label>
+            </>
+          )}
+
+          {(role === "doctor" || restrictDoctors) && (
             <div className="mt-4">
               {loadingOptions ? (
                 <p className="text-sm text-slate-500">
                   Loading doctors...
                 </p>
               ) : optionsError ? (
-                <p className="text-sm text-red-600">{optionsError}</p>
+                <p className="text-sm text-red-600">
+                  {optionsError}
+                </p>
               ) : visibleDoctors.length === 0 ? (
                 <p className="text-sm text-slate-500">
                   No active doctors are available for the selected
@@ -575,14 +680,15 @@ export default function TeamManagementClient({ clinicId }: Props) {
                       className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 text-sm text-slate-700 hover:bg-slate-50"
                     >
                       <input
-                        type="checkbox"
+                        type={role === "doctor" ? "radio" : "checkbox"}
+                        name={
+                          role === "doctor"
+                            ? "selected-doctor"
+                            : undefined
+                        }
                         checked={selectedDoctors.includes(doctor.id)}
                         onChange={() =>
-                          toggleValue(
-                            doctor.id,
-                            selectedDoctors,
-                            setSelectedDoctors
-                          )
+                          handleDoctorSelection(doctor.id)
                         }
                         className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                       />
@@ -596,6 +702,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
               {selectedDoctors.length > 0 && (
                 <p className="mt-3 text-xs text-slate-500">
                   {selectedDoctors.length} doctor(s) selected.
+                  {role === "doctor"
+                    ? " This email will be linked to this doctor."
+                    : ""}
                 </p>
               )}
             </div>
@@ -654,7 +763,11 @@ export default function TeamManagementClient({ clinicId }: Props) {
 
           <button
             type="submit"
-            disabled={sending || loadingOptions || Boolean(optionsError)}
+            disabled={
+              sending ||
+              loadingOptions ||
+              Boolean(optionsError)
+            }
             className="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {sending ? "Sending invitation..." : "Send invitation"}
@@ -663,9 +776,9 @@ export default function TeamManagementClient({ clinicId }: Props) {
 
         <p className="text-xs leading-5 text-slate-400">
           Invitation links expire after 7 days. Screen permissions,
-          department restrictions and doctor restrictions are saved when
-          the invited user accepts the invitation. An invitation email is
-          sent through EmailJS.
+          department restrictions and doctor restrictions are saved
+          when the invited user accepts the invitation. An invitation
+          email is sent through EmailJS.
         </p>
       </form>
     </main>

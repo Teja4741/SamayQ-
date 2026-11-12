@@ -3,6 +3,7 @@
 
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -48,31 +49,40 @@ export async function sendTeamInvitation(
   input: InvitationInput
 ): Promise<InvitationResult> {
   try {
+    // 1. Validate input.
+
     const clinicId = input.clinicId?.trim();
-    const fullName = input.fullName?.trim() || null;
-    const email = input.email?.trim().toLowerCase();
-    const phone = input.phone?.trim() || null;
     const role = input.role;
+
+    // Doctor identity comes from the selected existing doctor record.
+    // Do not use the staff name or phone as doctor identity.
+    const fullName =
+      role === "doctor" ? null : input.fullName?.trim() || null;
+
+    const phone =
+      role === "doctor" ? null : input.phone?.trim() || null;
+
+    const email = input.email?.trim().toLowerCase();
 
     if (!clinicId || !isUuid(clinicId)) {
       return { success: false, message: "Invalid clinic." };
     }
 
-    // Full name is optional.
     if (fullName && fullName.length > 100) {
       return { success: false, message: "Full name is too long." };
     }
 
-    // Email is mandatory.
     if (
       !email ||
       email.length > 254 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     ) {
-      return { success: false, message: "Enter a valid email address." };
+      return {
+        success: false,
+        message: "Enter a valid email address.",
+      };
     }
 
-    // Phone is optional.
     if (phone && phone.length > 25) {
       return { success: false, message: "Phone number is too long." };
     }
@@ -81,12 +91,22 @@ export async function sendTeamInvitation(
       return { success: false, message: "Invalid staff role." };
     }
 
-    const uniqueScreens = [...new Set(input.screenPermissions ?? [])];
-    const departmentIds = [...new Set(input.departmentIds ?? [])];
-    const doctorIds = [...new Set(input.doctorIds ?? [])];
-    const restrictDoctors = input.restrictDoctors === true;
+    const uniqueScreens = [
+      ...new Set(input.screenPermissions ?? []),
+    ];
 
-    // Validate screen permissions for ALL three roles.
+    const departmentIds = [
+      ...new Set(input.departmentIds ?? []),
+    ];
+
+    const doctorIds = [
+      ...new Set(input.doctorIds ?? []),
+    ];
+
+    // Doctor invitations must always be restricted to exactly one doctor.
+    const restrictDoctors =
+      role === "doctor" ? true : input.restrictDoctors === true;
+
     if (
       uniqueScreens.length === 0 ||
       uniqueScreens.some(
@@ -112,23 +132,33 @@ export async function sendTeamInvitation(
       };
     }
 
-    if (restrictDoctors && doctorIds.length === 0) {
-      return {
-        success: false,
-        message:
-          "Select at least one doctor when doctor restriction is enabled.",
-      };
+    if (role === "doctor") {
+      if (doctorIds.length !== 1) {
+        return {
+          success: false,
+          message: "Select exactly one doctor for a doctor login.",
+        };
+      }
+    } else {
+      if (restrictDoctors && doctorIds.length === 0) {
+        return {
+          success: false,
+          message:
+            "Select at least one doctor when doctor restriction is enabled.",
+        };
+      }
+
+      if (!restrictDoctors && doctorIds.length > 0) {
+        return {
+          success: false,
+          message:
+            "Disable doctor restriction or clear the selected doctors.",
+        };
+      }
     }
 
-    if (!restrictDoctors && doctorIds.length > 0) {
-      return {
-        success: false,
-        message:
-          "Disable doctor restriction or clear the selected doctors.",
-      };
-    }
+    // 2. Verify logged-in user.
 
-    // Verify logged-in inviter.
     const supabase = await createClient();
 
     const {
@@ -137,32 +167,48 @@ export async function sendTeamInvitation(
     } = await supabase.auth.getUser();
 
     if (authError || !user) {
+      console.error("Authentication error:", authError);
+
       return {
         success: false,
         message: "Please sign in again.",
       };
     }
 
+    // 3. Create service role client.
+
     const admin = createAdminClient();
 
-    // Verify platform administrator or clinic administrator.
-    const { data: platformAdmin, error: platformError } = await admin
+    // 4. Check platform administrator.
+
+    const {
+      data: platformAdmin,
+      error: platformError,
+    } = await admin
       .from("platform_admins")
       .select("user_id")
       .eq("user_id", user.id)
       .maybeSingle();
 
     if (platformError) {
-      console.error("Platform admin lookup:", platformError);
+      console.error("Platform admin verification error:", platformError);
 
       return {
         success: false,
-        message: "Unable to verify your permissions.",
+        message:
+          "Unable to verify platform administrator permissions.",
       };
     }
 
-    if (!platformAdmin) {
-      const { data: membership, error: membershipError } = await admin
+    const isPlatformAdmin = !!platformAdmin;
+
+    // 5. Check clinic administrator if not platform administrator.
+
+    if (!isPlatformAdmin) {
+      const {
+        data: membership,
+        error: membershipError,
+      } = await admin
         .from("clinic_memberships")
         .select("id")
         .eq("clinic_id", clinicId)
@@ -171,7 +217,20 @@ export async function sendTeamInvitation(
         .eq("is_active", true)
         .maybeSingle();
 
-      if (membershipError || !membership) {
+      if (membershipError) {
+        console.error(
+          "Membership verification error:",
+          membershipError
+        );
+
+        return {
+          success: false,
+          message:
+            "Unable to verify clinic administrator permissions.",
+        };
+      }
+
+      if (!membership) {
         return {
           success: false,
           message:
@@ -180,15 +239,19 @@ export async function sendTeamInvitation(
       }
     }
 
-    // Verify clinic.
-    const { data: clinic, error: clinicError } = await admin
+    // 6. Verify clinic.
+
+    const {
+      data: clinic,
+      error: clinicError,
+    } = await admin
       .from("clinics")
       .select("id, name, is_active")
       .eq("id", clinicId)
       .maybeSingle();
 
     if (clinicError) {
-      console.error("Clinic lookup:", clinicError);
+      console.error("Clinic lookup error:", clinicError);
 
       return {
         success: false,
@@ -203,8 +266,12 @@ export async function sendTeamInvitation(
       };
     }
 
-    // Read actual clinic booking configuration.
-    const { data: clinicSettings, error: settingsError } = await admin
+    // 7. Verify clinic booking settings.
+
+    const {
+      data: clinicSettings,
+      error: settingsError,
+    } = await admin
       .from("clinic_settings")
       .select(
         "booking_mode, doctor_booking_enabled, department_booking_enabled"
@@ -213,7 +280,10 @@ export async function sendTeamInvitation(
       .maybeSingle();
 
     if (settingsError || !clinicSettings) {
-      console.error("Clinic settings lookup:", settingsError);
+      console.error(
+        "Clinic settings lookup error:",
+        settingsError
+      );
 
       return {
         success: false,
@@ -221,7 +291,6 @@ export async function sendTeamInvitation(
       };
     }
 
-    // Doctor invitation must be enabled in clinic settings.
     if (
       role === "doctor" &&
       clinicSettings.doctor_booking_enabled !== true
@@ -232,9 +301,13 @@ export async function sendTeamInvitation(
       };
     }
 
-    // Verify selected departments belong to this clinic.
+    // 8. Verify selected departments.
+
     if (departmentIds.length > 0) {
-      const { data: departments, error: departmentError } = await admin
+      const {
+        data: departments,
+        error: departmentError,
+      } = await admin
         .from("departments")
         .select("id")
         .eq("clinic_id", clinicId)
@@ -246,6 +319,11 @@ export async function sendTeamInvitation(
         !departments ||
         departments.length !== departmentIds.length
       ) {
+        console.error(
+          "Department validation error:",
+          departmentError
+        );
+
         return {
           success: false,
           message:
@@ -254,7 +332,8 @@ export async function sendTeamInvitation(
       }
     }
 
-    // Verify selected doctors have active assignments in this clinic.
+    // 9. Verify selected doctors and their active assignments.
+
     if (doctorIds.length > 0) {
       let doctorQuery = admin
         .from("doctor_clinic_assignments")
@@ -264,30 +343,77 @@ export async function sendTeamInvitation(
         .in("doctor_id", doctorIds);
 
       if (departmentIds.length > 0) {
-        doctorQuery = doctorQuery.in("department_id", departmentIds);
+        doctorQuery = doctorQuery.in(
+          "department_id",
+          departmentIds
+        );
       }
 
-      const { data: assignments, error: assignmentError } =
-        await doctorQuery;
+      const {
+        data: assignments,
+        error: assignmentError,
+      } = await doctorQuery;
+
+      if (assignmentError) {
+        console.error(
+          "Doctor assignment lookup error:",
+          assignmentError
+        );
+
+        return {
+          success: false,
+          message: "Unable to verify selected doctor assignments.",
+        };
+      }
 
       const assignedDoctorIds = [
-        ...new Set((assignments ?? []).map((row) => row.doctor_id)),
+        ...new Set(
+          (assignments ?? []).map((row) => row.doctor_id)
+        ),
       ];
 
-      if (
-        assignmentError ||
-        assignedDoctorIds.length !== doctorIds.length
-      ) {
+      if (assignedDoctorIds.length !== doctorIds.length) {
         return {
           success: false,
           message:
             "One or more selected doctors are not actively assigned to the selected clinic/departments.",
         };
       }
+
+      // Verify the selected doctor record is active.
+      const {
+        data: activeDoctors,
+        error: activeDoctorError,
+      } = await admin
+        .from("doctors")
+        .select("id")
+        .eq("is_active", true)
+        .in("id", doctorIds);
+
+      if (
+        activeDoctorError ||
+        !activeDoctors ||
+        activeDoctors.length !== doctorIds.length
+      ) {
+        console.error(
+          "Doctor record validation error:",
+          activeDoctorError
+        );
+
+        return {
+          success: false,
+          message:
+            "One or more selected doctor records are unavailable.",
+        };
+      }
     }
 
-    // Prevent duplicate pending invitations.
-    const { data: existingInvitation, error: existingError } = await admin
+    // 10. Check existing pending invitation.
+
+    const {
+      data: existingInvitation,
+      error: existingError,
+    } = await admin
       .from("team_invitations")
       .select("id")
       .eq("clinic_id", clinicId)
@@ -297,7 +423,10 @@ export async function sendTeamInvitation(
       .maybeSingle();
 
     if (existingError) {
-      console.error("Existing invitation lookup:", existingError);
+      console.error(
+        "Existing invitation lookup error:",
+        existingError
+      );
 
       return {
         success: false,
@@ -313,7 +442,8 @@ export async function sendTeamInvitation(
       };
     }
 
-    // EmailJS configuration.
+    // 11. Verify EmailJS configuration.
+
     const serviceId = process.env.EMAILJS_SERVICE_ID;
     const templateId = process.env.EMAILJS_TEMPLATE_ID;
     const publicKey = process.env.EMAILJS_PUBLIC_KEY;
@@ -328,11 +458,13 @@ export async function sendTeamInvitation(
       };
     }
 
+    // 12. Generate invitation link.
+
     const siteUrl = (
       process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"
-    ).replace(/\/$/, "");
+    ).replace(/\/+$/, "");
 
-    const invitationId = crypto.randomUUID();
+    const invitationId = randomUUID();
 
     const acceptPath =
       `/auth/accept-invitation?invitationId=${invitationId}`;
@@ -340,21 +472,22 @@ export async function sendTeamInvitation(
     const redirectTo =
       `${siteUrl}/auth/confirm?next=${encodeURIComponent(acceptPath)}`;
 
-    // Generate Supabase invite token.
-    const { data: generated, error: generateError } =
-      await admin.auth.admin.generateLink({
-        type: "invite",
-        email,
-        options: {
-          redirectTo,
-          data: {
-            ...(fullName ? { full_name: fullName } : {}),
-          },
+    const {
+      data: generated,
+      error: generateError,
+    } = await admin.auth.admin.generateLink({
+      type: "invite",
+      email,
+      options: {
+        redirectTo,
+        data: {
+          ...(fullName ? { full_name: fullName } : {}),
         },
-      });
+      },
+    });
 
     if (generateError || !generated?.properties?.hashed_token) {
-      console.error("Invite link generation:", generateError);
+      console.error("Invite link generation error:", generateError);
 
       return {
         success: false,
@@ -370,7 +503,8 @@ export async function sendTeamInvitation(
       `&token_hash=${encodeURIComponent(hashedToken)}` +
       `&type=invite`;
 
-    // Save invitation and permissions.
+    // 13. Save invitation and permissions.
+
     const expiresAt = new Date(
       Date.now() + 7 * 24 * 60 * 60 * 1000
     ).toISOString();
@@ -388,17 +522,14 @@ export async function sendTeamInvitation(
         status: "pending",
         token_hash: hashedToken,
         expires_at: expiresAt,
-
-        // Permissions for all three roles.
         screen_permissions: uniqueScreens,
-
         department_ids: departmentIds,
         restrict_doctors: restrictDoctors,
         doctor_ids: restrictDoctors ? doctorIds : [],
       });
 
     if (insertError) {
-      console.error("Invitation insert:", insertError);
+      console.error("Invitation insert error:", insertError);
 
       return {
         success: false,
@@ -406,29 +537,50 @@ export async function sendTeamInvitation(
       };
     }
 
-    // Send invitation email through EmailJS.
-    const emailResponse = await fetch(
-      "https://api.emailjs.com/api/v1.0/email/send",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          service_id: serviceId,
-          template_id: templateId,
-          user_id: publicKey,
-          accessToken: privateKey,
-          template_params: {
-            to_name: fullName || "Staff Member",
-            to_email: email,
-            clinic_name: clinic.name,
-            staff_role: role,
-            accept_url: invitationLink,
+    // 14. Send invitation email through EmailJS.
+
+    let emailResponse: Response;
+
+    try {
+      emailResponse = await fetch(
+        "https://api.emailjs.com/api/v1.0/email/send",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
           },
-        }),
-      }
-    );
+          body: JSON.stringify({
+            service_id: serviceId,
+            template_id: templateId,
+            user_id: publicKey,
+            accessToken: privateKey,
+            template_params: {
+              to_name: fullName || "Staff Member",
+              to_email: email,
+              clinic_name: clinic.name,
+              staff_role: role,
+              accept_url: invitationLink,
+            },
+          }),
+        }
+      );
+    } catch (emailNetworkError) {
+      console.error(
+        "EmailJS network error:",
+        emailNetworkError
+      );
+
+      await admin
+        .from("team_invitations")
+        .update({ status: "cancelled" })
+        .eq("id", invitationId);
+
+      return {
+        success: false,
+        message:
+          "Invitation was created but the email could not be sent. Please try again.",
+      };
+    }
 
     if (!emailResponse.ok) {
       const emailError = await emailResponse.text();
@@ -446,6 +598,15 @@ export async function sendTeamInvitation(
           "Invitation was created but the email could not be sent. Please try again.",
       };
     }
+
+    // 15. Success.
+
+    console.log("Team invitation sent successfully:", {
+      invitationId,
+      clinicId,
+      role,
+      email,
+    });
 
     return {
       success: true,

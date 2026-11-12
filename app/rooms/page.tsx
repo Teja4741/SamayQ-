@@ -53,7 +53,7 @@ export default async function RoomsPage({
   let accessibleClinicIds: string[] = [];
   let memberships: Membership[] = [];
 
-  // 3. Load accessible hospitals.
+  // 3. Load accessible hospitals for every clinic role.
   if (isPlatformAdmin) {
     const { data: clinics, error } = await supabase
       .from("clinics")
@@ -71,7 +71,7 @@ export default async function RoomsPage({
       .select("clinic_id, role")
       .eq("user_id", user.id)
       .eq("is_active", true)
-      .in("role", ["administrator", "receptionist"]);
+      .in("role", ["administrator", "receptionist", "doctor"]);
 
     if (error) {
       throw new Error(
@@ -196,23 +196,25 @@ export default async function RoomsPage({
     );
   }
 
-  // 7. Determine Navbar role.
+  // 7. Determine the actual membership role.
   const selectedMembership = memberships.find(
     (membership) => membership.clinic_id === selectedClinic.id
   );
 
   const userRole = isPlatformAdmin
     ? "master_admin"
-    : selectedMembership?.role === "receptionist"
-      ? "receptionist"
-      : "clinic_admin";
+    : selectedMembership?.role === "doctor"
+      ? "doctor"
+      : selectedMembership?.role === "receptionist"
+        ? "receptionist"
+        : "clinic_admin";
 
   // 8. Load room dashboard data.
   const dashboardData = await getClinicRoomsDashboardData(
     selectedClinic.id
   );
 
-  // 9. Render one Navbar and the client dashboard.
+  // 9. Render Navbar and room dashboard.
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <Navbar

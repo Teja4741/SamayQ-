@@ -62,6 +62,8 @@ async function verifyUser() {
   return { supabase, user };
 }
 
+// Room management access.
+// Doctors are intentionally excluded.
 async function verifyClinicAccess(clinicId: string) {
   const { supabase, user } = await verifyUser();
 
@@ -93,19 +95,68 @@ async function verifyClinicAccess(clinicId: string) {
   return supabase;
 }
 
+// Room dashboard read access.
+// Doctors can view the dashboard but cannot manage rooms.
+async function verifyClinicReadAccess(clinicId: string) {
+  const { supabase, user } = await verifyUser();
+
+  const { data: platformAdmin, error: adminError } = await supabase
+    .from("platform_admins")
+    .select("user_id")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (adminError) {
+    throw new Error(adminError.message);
+  }
+
+  if (platformAdmin) {
+    return {
+      supabase,
+      user,
+      role: "master_admin" as const,
+    };
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from("clinic_memberships")
+    .select("role")
+    .eq("clinic_id", clinicId)
+    .eq("user_id", user.id)
+    .eq("is_active", true)
+    .in("role", ["administrator", "receptionist", "doctor"])
+    .maybeSingle();
+
+  if (membershipError || !membership) {
+    throw new Error(
+      "You do not have permission to view this hospital's rooms."
+    );
+  }
+
+  return {
+    supabase,
+    user,
+    role: membership.role,
+  };
+}
+
 // --------------------------------------------------
 // EXISTING ROOM FORM ACTIONS
 // --------------------------------------------------
 
 function getRoomFormValues(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
+
   const roomType = String(
     formData.get("room_type") ?? "consultation"
   ).trim();
+
   const departmentId = String(
     formData.get("department_id") ?? ""
   ).trim();
+
   const displayOrder = Number(formData.get("display_order") ?? 1);
+
   const clinicId = String(formData.get("clinicId") ?? "").trim();
 
   if (!name || !clinicId || !roomType) {
@@ -127,6 +178,7 @@ function getRoomFormValues(formData: FormData) {
 
 export async function createRoom(formData: FormData) {
   const values = getRoomFormValues(formData);
+
   const supabase = await verifyClinicAccess(values.clinic_id);
 
   const { error } = await supabase.from("rooms").insert(values);
@@ -140,11 +192,14 @@ export async function createRoom(formData: FormData) {
 
 export async function updateRoom(formData: FormData) {
   const values = getRoomFormValues(formData);
+
   const supabase = await verifyClinicAccess(values.clinic_id);
 
   const id = String(formData.get("id") ?? "").trim();
 
-  if (!id) throw new Error("Room ID is required.");
+  if (!id) {
+    throw new Error("Room ID is required.");
+  }
 
   const { error } = await supabase
     .from("rooms")
@@ -166,7 +221,9 @@ export async function updateRoom(formData: FormData) {
 
 export async function setRoomActive(formData: FormData) {
   const id = String(formData.get("id") ?? "").trim();
+
   const clinicId = String(formData.get("clinicId") ?? "").trim();
+
   const activeValue = String(formData.get("is_active") ?? "");
 
   if (!id || !clinicId) {
@@ -177,6 +234,8 @@ export async function setRoomActive(formData: FormData) {
     throw new Error("Invalid room status.");
   }
 
+  // Only administrators, receptionists and platform admins can
+  // activate or deactivate rooms. Doctors have read-only access.
   const supabase = await verifyClinicAccess(clinicId);
 
   const { error } = await supabase
@@ -223,6 +282,7 @@ export async function createClinicRoom(input: CreateRoomInput) {
     settings?.booking_mode === "doctor" ? "doctor" : "department";
 
   let departmentId: string | null = null;
+
   let doctorAssignmentId: string | null = null;
 
   if (input.assignmentId) {
@@ -276,7 +336,7 @@ export async function createClinicRoom(input: CreateRoomInput) {
     );
   }
 
-  // Create its path. The database constraint allows only one owner type.
+  // Create its path.
   const { data: path, error: pathError } = await supabase
     .from("room_paths")
     .insert({
@@ -336,7 +396,11 @@ export async function createClinicRoom(input: CreateRoomInput) {
   }
 
   revalidatePath("/rooms");
-  return { success: true, roomId: room.id };
+
+  return {
+    success: true,
+    roomId: room.id,
+  };
 }
 
 // --------------------------------------------------
@@ -350,7 +414,8 @@ export async function getClinicRoomsDashboardData(
     throw new Error("Clinic ID is required.");
   }
 
-  const supabase = await verifyClinicAccess(clinicId);
+  const { supabase, user, role } =
+    await verifyClinicReadAccess(clinicId);
 
   // Booking mode.
   const { data: settings, error: settingsError } = await supabase
@@ -374,7 +439,9 @@ export async function getClinicRoomsDashboardData(
     .eq("is_active", true)
     .order("display_order");
 
-  if (roomsError) throw new Error(roomsError.message);
+  if (roomsError) {
+    throw new Error(roomsError.message);
+  }
 
   // Departments.
   const { data: departmentRows, error: departmentsError } =
@@ -384,7 +451,9 @@ export async function getClinicRoomsDashboardData(
       .eq("clinic_id", clinicId)
       .order("name");
 
-  if (departmentsError) throw new Error(departmentsError.message);
+  if (departmentsError) {
+    throw new Error(departmentsError.message);
+  }
 
   // Doctor assignments.
   const { data: assignmentRows, error: assignmentsError } =
@@ -394,9 +463,40 @@ export async function getClinicRoomsDashboardData(
       .eq("clinic_id", clinicId)
       .eq("is_active", true);
 
-  if (assignmentsError) throw new Error(assignmentsError.message);
+  if (assignmentsError) {
+    throw new Error(assignmentsError.message);
+  }
 
-  const assignmentRowsSafe = assignmentRows ?? [];
+  let assignmentRowsSafe = assignmentRows ?? [];
+
+  // Restrict doctor accounts to their own active assignments.
+  if (role === "doctor") {
+    const { data: linkedDoctors, error: linkedDoctorsError } =
+      await supabase
+        .from("doctors")
+        .select("id")
+        .eq("profile_id", user.id)
+        .eq("is_active", true);
+
+    if (linkedDoctorsError) {
+      throw new Error(linkedDoctorsError.message);
+    }
+
+    const linkedDoctorIds = new Set(
+      (linkedDoctors ?? []).map((doctor) => doctor.id)
+    );
+
+    assignmentRowsSafe = assignmentRowsSafe.filter((assignment) =>
+      linkedDoctorIds.has(assignment.doctor_id)
+    );
+
+    if (assignmentRowsSafe.length === 0) {
+      throw new Error(
+        "No active doctor assignment is linked to your account."
+      );
+    }
+  }
+
   const doctorIds = [
     ...new Set(assignmentRowsSafe.map((item) => item.doctor_id)),
   ];
@@ -409,7 +509,9 @@ export async function getClinicRoomsDashboardData(
           .in("id", doctorIds)
       : { data: [], error: null };
 
-  if (doctorsError) throw new Error(doctorsError.message);
+  if (doctorsError) {
+    throw new Error(doctorsError.message);
+  }
 
   const doctorMap = new Map(
     (doctorRows ?? []).map((doctor) => [
@@ -423,7 +525,8 @@ export async function getClinicRoomsDashboardData(
       assignment.id,
       {
         ...assignment,
-        doctorName: doctorMap.get(assignment.doctor_id) ?? "Unknown Doctor",
+        doctorName:
+          doctorMap.get(assignment.doctor_id) ?? "Unknown Doctor",
       },
     ])
   );
@@ -435,7 +538,9 @@ export async function getClinicRoomsDashboardData(
     .eq("clinic_id", clinicId)
     .eq("is_active", true);
 
-  if (pathsError) throw new Error(pathsError.message);
+  if (pathsError) {
+    throw new Error(pathsError.message);
+  }
 
   const pathIds = (paths ?? []).map((path) => path.id);
 
@@ -449,7 +554,9 @@ export async function getClinicRoomsDashboardData(
           .in("room_path_id", pathIds)
       : { data: [], error: null };
 
-  if (stepsError) throw new Error(stepsError.message);
+  if (stepsError) {
+    throw new Error(stepsError.message);
+  }
 
   const pathMap = new Map(
     (paths ?? []).map((path) => [path.id, path])
@@ -457,11 +564,15 @@ export async function getClinicRoomsDashboardData(
 
   const roomAssignmentMap = new Map<
     string,
-    { departmentId: string | null; doctorAssignmentId: string | null }
+    {
+      departmentId: string | null;
+      doctorAssignmentId: string | null;
+    }
   >();
 
   for (const step of steps ?? []) {
     const path = pathMap.get(step.room_path_id);
+
     if (!path) continue;
 
     roomAssignmentMap.set(step.room_id, {
@@ -479,12 +590,25 @@ export async function getClinicRoomsDashboardData(
     .eq("clinic_id", clinicId)
     .eq("is_active", true);
 
-  if (queuesError) throw new Error(queuesError.message);
+  if (queuesError) {
+    throw new Error(queuesError.message);
+  }
 
   const queueRowsSafe = queueRows ?? [];
-  const queueIds = queueRowsSafe.map((queue) => queue.id);
 
-  // Only show room entries belonging to the current 3:00 AM-to-3:00 AM business day.
+  // Doctors only see queues belonging to their own assignments.
+  const visibleQueueRows =
+    role === "doctor"
+      ? queueRowsSafe.filter(
+          (queue) =>
+            queue.doctor_clinic_assignment_id !== null &&
+            assignmentMap.has(queue.doctor_clinic_assignment_id)
+        )
+      : queueRowsSafe;
+
+  const queueIds = visibleQueueRows.map((queue) => queue.id);
+
+  // Only show entries belonging to the current 3:00 AM-to-3:00 AM business day.
   const businessDate = getCurrentBusinessDate();
 
   const { data: entries, error: entriesError } =
@@ -501,9 +625,12 @@ export async function getClinicRoomsDashboardData(
           .order("joined_at", { ascending: true })
       : { data: [], error: null };
 
-  if (entriesError) throw new Error(entriesError.message);
+  if (entriesError) {
+    throw new Error(entriesError.message);
+  }
 
   const entryRows = entries ?? [];
+
   const patientIds = [
     ...new Set(entryRows.map((entry) => entry.patient_id)),
   ];
@@ -517,14 +644,16 @@ export async function getClinicRoomsDashboardData(
           .in("id", patientIds)
       : { data: [], error: null };
 
-  if (patientsError) throw new Error(patientsError.message);
+  if (patientsError) {
+    throw new Error(patientsError.message);
+  }
 
   const patientMap = new Map(
     (patients ?? []).map((patient) => [patient.id, patient])
   );
 
   const queueMap = new Map(
-    queueRowsSafe.map((queue) => [queue.id, queue])
+    visibleQueueRows.map((queue) => [queue.id, queue])
   );
 
   const departmentMap = new Map(
@@ -534,8 +663,10 @@ export async function getClinicRoomsDashboardData(
     ])
   );
 
+  // Build room dashboard.
   const rooms: RoomDashboardRoom[] = (roomRows ?? []).map((room) => {
     const assignment = roomAssignmentMap.get(room.id);
+
     const doctorAssignment = assignment?.doctorAssignmentId
       ? assignmentMap.get(assignment.doctorAssignmentId)
       : null;
@@ -544,22 +675,28 @@ export async function getClinicRoomsDashboardData(
       id: room.id,
       name: room.name,
       roomType: room.room_type,
-      departmentId: room.department_id ?? assignment?.departmentId ?? null,
-      doctorAssignmentId: assignment?.doctorAssignmentId ?? null,
+      departmentId:
+        room.department_id ?? assignment?.departmentId ?? null,
+      doctorAssignmentId:
+        assignment?.doctorAssignmentId ?? null,
       doctorName: doctorAssignment?.doctorName ?? null,
       displayOrder: room.display_order,
       patients: [],
     };
   });
 
-  const roomMap = new Map(rooms.map((room) => [room.id, room]));
+  const roomMap = new Map(
+    rooms.map((room) => [room.id, room])
+  );
 
+  // Attach patients to their current rooms.
   for (const entry of entryRows) {
     const room = entry.current_room_id
       ? roomMap.get(entry.current_room_id)
       : undefined;
 
     const patient = patientMap.get(entry.patient_id);
+
     const queue = queueMap.get(entry.queue_id);
 
     if (!room || !patient || !queue) continue;
@@ -581,6 +718,14 @@ export async function getClinicRoomsDashboardData(
       ? assignmentMap.get(doctorAssignmentId)
       : null;
 
+    // Additional protection: never attach another doctor's patient.
+    if (
+      role === "doctor" &&
+      (!doctorAssignmentId || !assignmentMap.has(doctorAssignmentId))
+    ) {
+      continue;
+    }
+
     const row: RoomDashboardPatient = {
       queueEntryId: entry.id,
       patientId: patient.id,
@@ -598,12 +743,15 @@ export async function getClinicRoomsDashboardData(
       status: entry.status as "active" | "missed",
       joinedAt: entry.joined_at,
       entryType:
-        entry.entry_type === "appointment" ? "appointment" : "walk_in",
+        entry.entry_type === "appointment"
+          ? "appointment"
+          : "walk_in",
     };
 
     room.patients.push(row);
   }
 
+  // Department counts.
   const departments: RoomDashboardDepartment[] = (
     departmentRows ?? []
   ).map((department) => ({
@@ -619,8 +767,9 @@ export async function getClinicRoomsDashboardData(
     ),
   }));
 
-  const doctors: RoomDashboardDoctor[] = assignmentRowsSafe.map(
-    (assignment) => {
+  // Doctor counts.
+  const doctors: RoomDashboardDoctor[] =
+    assignmentRowsSafe.map((assignment) => {
       const doctor = assignmentMap.get(assignment.id);
 
       return {
@@ -637,8 +786,7 @@ export async function getClinicRoomsDashboardData(
           0
         ),
       };
-    }
-  );
+    });
 
   return {
     bookingMode,
@@ -669,7 +817,9 @@ export async function callRoomPatient(queueEntryId: string) {
     p_action: "call",
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(error.message);
+  }
 
   if (!data || data.success !== true) {
     throw new Error(data?.error || "Unable to call this patient.");
@@ -680,7 +830,6 @@ export async function callRoomPatient(queueEntryId: string) {
 
   return data;
 }
-
 
 // --------------------------------------------------
 // TRANSFER PATIENT TO ANOTHER ROOM

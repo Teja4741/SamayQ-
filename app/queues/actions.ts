@@ -74,7 +74,114 @@ function getCurrentBusinessDate(): string {
   return businessDate.toISOString().slice(0, 10);
 }
 
-// Get queue data for the selected clinic.
+// --------------------------------------------------
+// QUEUE READ ACCESS
+// --------------------------------------------------
+
+// Administrators and receptionists can see all queues.
+// Doctors can only see queues linked to their own doctor profile.
+async function verifyQueueReadAccess(clinicId: string) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    throw new Error("Please sign in again.");
+  }
+
+  // Platform administrators can view all clinic queues.
+  const { data: platformAdmin, error: adminError } = await supabase
+    .from("platform_admins")
+    .select("user_id")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (adminError) {
+    throw new Error(adminError.message);
+  }
+
+  if (platformAdmin) {
+    return {
+      supabase,
+      doctorAssignmentIds: null as string[] | null,
+    };
+  }
+
+  // Verify active clinic membership.
+  const { data: membership, error: membershipError } = await supabase
+    .from("clinic_memberships")
+    .select("role")
+    .eq("clinic_id", clinicId)
+    .eq("user_id", user.id)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (membershipError) {
+    throw new Error(membershipError.message);
+  }
+
+  if (!membership) {
+    throw new Error("You do not have access to this hospital.");
+  }
+
+  // Administrators and receptionists can view all queues.
+  if (
+    membership.role === "administrator" ||
+    membership.role === "receptionist"
+  ) {
+    return {
+      supabase,
+      doctorAssignmentIds: null as string[] | null,
+    };
+  }
+
+  if (membership.role !== "doctor") {
+    throw new Error("You are not authorized to view this queue.");
+  }
+
+  // Find the doctor profile linked to this login.
+  const { data: doctor, error: doctorError } = await supabase
+    .from("doctors")
+    .select("id")
+    .eq("profile_id", user.id)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (doctorError) {
+    throw new Error(doctorError.message);
+  }
+
+  if (!doctor) {
+    throw new Error("No doctor profile is linked to your account.");
+  }
+
+  // Find this doctor's active assignment(s) in this clinic.
+  const { data: assignments, error: assignmentsError } = await supabase
+    .from("doctor_clinic_assignments")
+    .select("id")
+    .eq("clinic_id", clinicId)
+    .eq("doctor_id", doctor.id)
+    .eq("is_active", true);
+
+  if (assignmentsError) {
+    throw new Error(assignmentsError.message);
+  }
+
+  return {
+    supabase,
+    doctorAssignmentIds: (assignments ?? []).map(
+      (assignment) => assignment.id
+    ),
+  };
+}
+
+// --------------------------------------------------
+// GET QUEUE DATA
+// --------------------------------------------------
+
 export async function getClinicQueueData(
   clinicId: string
 ): Promise<QueueDataResult> {
@@ -82,7 +189,8 @@ export async function getClinicQueueData(
     throw new Error("Clinic ID is required.");
   }
 
-  const supabase = await createClient();
+  const { supabase, doctorAssignmentIds } =
+    await verifyQueueReadAccess(clinicId);
 
   // 1. Load clinic booking mode.
   const {
@@ -123,7 +231,20 @@ export async function getClinicQueueData(
     );
   }
 
-  const queueRows = queues ?? [];
+  const allQueueRows = queues ?? [];
+
+  // Restrict doctor accounts to queues assigned to their doctor profile.
+  const queueRows =
+    doctorAssignmentIds === null
+      ? allQueueRows
+      : allQueueRows.filter(
+          (queue) =>
+            queue.doctor_clinic_assignment_id !== null &&
+            doctorAssignmentIds.includes(
+              queue.doctor_clinic_assignment_id
+            )
+        );
+
   const queueIds = queueRows.map((queue) => queue.id);
 
   // 3. Load queue entries for the current business day.
@@ -188,7 +309,7 @@ export async function getClinicQueueData(
     ])
   );
 
-  // 5. Load ALL doctor-clinic assignments.
+  // 5. Load doctor-clinic assignments.
   // Inactive assignments are retained for historical queue mapping.
   const {
     data: assignments,
@@ -204,14 +325,23 @@ export async function getClinicQueueData(
     );
   }
 
-  const assignmentRows = assignments ?? [];
+  const allAssignmentRows = assignments ?? [];
 
-  // Only active assignments should appear in selectable doctor lists.
+  // Keep all assignments for administrators/receptionists.
+  // Doctors only receive their own assignments.
+  const assignmentRows =
+    doctorAssignmentIds === null
+      ? allAssignmentRows
+      : allAssignmentRows.filter((assignment) =>
+          doctorAssignmentIds.includes(assignment.id)
+        );
+
+  // Only active assignments appear in selectable doctor filters.
   const activeAssignmentRows = assignmentRows.filter(
     (assignment) => assignment.is_active === true
   );
 
-  // Keep all assignments for existing queue entries.
+  // Keep all visible assignments for existing queue-entry mapping.
   const assignmentMap = new Map(
     assignmentRows.map((assignment) => [
       assignment.id,
@@ -322,7 +452,6 @@ export async function getClinicQueueData(
   ];
 
   if (bookingMode === "doctor") {
-    // Only active clinic assignments are displayed.
     for (const assignment of activeAssignmentRows) {
       const doctorName = doctorMap.get(assignment.doctor_id);
 
@@ -344,7 +473,7 @@ export async function getClinicQueueData(
     }
   }
 
-  // 10. Build queue lookup.
+  // 10. Build queue lookup using only queues visible to this user.
   const queueMap = new Map(
     queueRows.map((queue) => [
       queue.id,
@@ -364,7 +493,7 @@ export async function getClinicQueueData(
       return null;
     }
 
-    // Use all assignments, including inactive ones,
+    // Use all visible assignments, including inactive ones,
     // to preserve historical queue-entry mapping.
     const assignment = queue.doctor_clinic_assignment_id
       ? assignmentMap.get(queue.doctor_clinic_assignment_id)
@@ -419,7 +548,10 @@ export async function getClinicQueueData(
   };
 }
 
-// Load doctor and department form options.
+// --------------------------------------------------
+// QUEUE FORM OPTIONS
+// --------------------------------------------------
+
 export async function getClinicQueueFormOptions(
   clinicId: string
 ): Promise<QueueFormOptions> {
@@ -427,9 +559,10 @@ export async function getClinicQueueFormOptions(
     throw new Error("Clinic ID is required.");
   }
 
-  const supabase = await createClient();
+  const { supabase, doctorAssignmentIds } =
+    await verifyQueueReadAccess(clinicId);
 
-  // Load only active doctor assignments for this clinic.
+  // Load active doctor assignments for this clinic.
   const {
     data: assignments,
     error: assignmentError,
@@ -445,7 +578,12 @@ export async function getClinicQueueFormOptions(
     );
   }
 
-  const assignmentRows = assignments ?? [];
+  // Doctors receive only their own assignment options.
+  const assignmentRows = (assignments ?? []).filter(
+    (assignment) =>
+      doctorAssignmentIds === null ||
+      doctorAssignmentIds.includes(assignment.id)
+  );
 
   const doctorIds = [
     ...new Set(
@@ -514,7 +652,10 @@ export async function getClinicQueueFormOptions(
   };
 }
 
-// Register walk-in patient and allocate token.
+// --------------------------------------------------
+// REGISTER WALK-IN PATIENT
+// --------------------------------------------------
+
 export async function registerWalkInPatient(data: {
   clinicId: string;
   patientId: string | null;
@@ -578,6 +719,10 @@ export async function registerWalkInPatient(data: {
   };
 }
 
+// --------------------------------------------------
+// MANAGE QUEUE ENTRY
+// --------------------------------------------------
+
 export type QueueManagementAction =
   | "call"
   | "miss"
@@ -626,7 +771,10 @@ export async function manageQueueEntry(
   return data;
 }
 
-// Get active rooms for patient transfer.
+// --------------------------------------------------
+// GET ACTIVE ROOMS FOR PATIENT TRANSFER
+// --------------------------------------------------
+
 export async function getClinicActiveRooms(clinicId: string) {
   if (!clinicId) {
     throw new Error("Clinic ID is required.");
