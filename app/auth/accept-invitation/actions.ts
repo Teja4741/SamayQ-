@@ -6,15 +6,20 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function acceptTeamInvitation(invitationId: string) {
   try {
-    // 1. Validate invitation ID
-    if (!invitationId || !/^[0-9a-f-]{36}$/i.test(invitationId)) {
+    // 1. Validate invitation ID.
+    if (
+      !invitationId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        invitationId
+      )
+    ) {
       return {
         success: false,
         message: "Invalid invitation link.",
       };
     }
 
-    // 2. Verify the authenticated Supabase user
+    // 2. Verify authenticated Supabase user.
     const supabase = await createClient();
 
     const {
@@ -25,17 +30,20 @@ export async function acceptTeamInvitation(invitationId: string) {
     if (authError || !user || !user.email) {
       return {
         success: false,
-        message: "Your session has expired. Please open the invitation email again.",
+        message:
+          "Your session has expired. Please open the invitation email again.",
       };
     }
 
     const admin = createAdminClient();
     const normalizedEmail = user.email.trim().toLowerCase();
 
-    // 3. Find the matching pending invitation
+    // 3. Verify the invitation belongs to the authenticated user's email.
     const { data: invitation, error: invitationError } = await admin
       .from("team_invitations")
-      .select("id, clinic_id, email, full_name, phone, role, status, expires_at")
+      .select(
+        "id, clinic_id, email, full_name, phone, role, status, expires_at"
+      )
       .eq("id", invitationId)
       .ilike("email", normalizedEmail)
       .eq("status", "pending")
@@ -58,8 +66,7 @@ export async function acceptTeamInvitation(invitationId: string) {
       };
     }
 
-    // 4. Ensure the invited Supabase user has a profile.
-    // clinic_memberships.user_id references profiles.id.
+    // 4. Ensure the invited user has a profile.
     const { error: profileError } = await admin
       .from("profiles")
       .upsert(
@@ -83,7 +90,8 @@ export async function acceptTeamInvitation(invitationId: string) {
       };
     }
 
-    // 5. Atomically activate membership and accept invitation.
+    // 5. Atomically create membership, save permissions,
+    //    and mark the invitation as accepted.
     const { data: result, error: acceptanceError } = await admin.rpc(
       "accept_team_invitation",
       {
@@ -98,7 +106,8 @@ export async function acceptTeamInvitation(invitationId: string) {
 
       return {
         success: false,
-        message: acceptanceError.message || "Could not accept your invitation.",
+        message:
+          acceptanceError.message || "Could not accept your invitation.",
       };
     }
 

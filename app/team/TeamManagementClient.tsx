@@ -1,620 +1,700 @@
+
 "use client";
-import { useEffect, useState } from "react";
+
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { sendTeamInvitation } from "./actions";
-type MemberRole = "administrator" | "receptionist" | "doctor";
-type ScreenOption = {
-  id: string;
-  label: string;
-  description: string;
-};
+
+type StaffRole = "administrator" | "receptionist" | "doctor";
+
 type Department = {
   id: string;
   name: string;
 };
+
 type Doctor = {
   id: string;
-  name: string;
+  full_name: string;
   departmentIds: string[];
 };
+
 type Props = {
   clinicId: string;
 };
-const screenOptions: ScreenOption[] = [
-  {
-    id: "waitlist",
-    label: "Waitlist",
-    description: "Run the live line: add, call, seat and remove people.",
-  },
-  {
-    id: "reservations",
-    label: "Reservations",
-    description: "Take, move and cancel appointment bookings.",
-  },
-  {
-    id: "customers",
-    label: "Patients",
-    description: "View patient details, visits and no-show history.",
-  },
-  {
-    id: "insights",
-    label: "Insights",
-    description: "Business analytics, peak hours and repeat visitors.",
-  },
-  {
-    id: "history",
-    label: "History",
-    description: "Review past business days and waiting times.",
-  },
-  {
-    id: "settings",
-    label: "Settings",
-    description: "Manage clinic settings and notifications.",
-  },
-  {
-    id: "departments",
-    label: "Section & Department Settings",
-    description: "Manage departments, sections and their rules.",
-  },
-  {
-    id: "team",
-    label: "Team",
-    description: "Invite people and manage their access.",
-  },
-  {
-    id: "billing",
-    label: "Billing & plan",
-    description: "Manage subscription and billing.",
-  },
+
+const screenOptions = [
+  { id: "waitlist", label: "Waitlist" },
+  { id: "reservations", label: "Reservations" },
+  { id: "customers", label: "Patients / Customers" },
+  { id: "insights", label: "Insights" },
+  { id: "history", label: "History" },
+  { id: "settings", label: "Settings" },
+  { id: "departments", label: "Departments" },
+  { id: "team", label: "Team Management" },
+  { id: "billing", label: "Billing" },
 ];
-const inputClass =
-  "mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-violet-500 focus:ring-2 focus:ring-violet-100";
-const labelClass = "block text-sm font-medium text-slate-600";
+
 export default function TeamManagementClient({ clinicId }: Props) {
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [countryCode, setCountryCode] = useState("+91");
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState<MemberRole>("receptionist");
+  const [role, setRole] = useState<StaffRole>("receptionist");
+
   const [selectedScreens, setSelectedScreens] = useState<string[]>([
     "waitlist",
     "reservations",
   ]);
+
   const [departments, setDepartments] = useState<Department[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
+
   const [selectedDepartments, setSelectedDepartments] = useState<string[]>(
     []
   );
+
   const [restrictDoctors, setRestrictDoctors] = useState(false);
   const [selectedDoctors, setSelectedDoctors] = useState<string[]>([]);
-  const [notice, setNotice] = useState("");
-  const [noticeType, setNoticeType] = useState<
-    "success" | "error" | ""
-  >("");
+
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [optionsError, setOptionsError] = useState("");
+
   const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [noticeType, setNoticeType] = useState<"success" | "error">("success");
   const [invitationLink, setInvitationLink] = useState("");
-  // Load departments and doctors belonging to this clinic.
+
+  // Load active departments and doctors belonging to this clinic.
   useEffect(() => {
     let cancelled = false;
-    async function loadClinicOptions() {
+
+    async function loadOptions() {
       setLoadingOptions(true);
       setOptionsError("");
-      const supabase = createClient();
-      const { data: departmentRows, error: departmentError } =
-        await supabase
-          .from("departments")
-          .select("id, name")
-          .eq("clinic_id", clinicId)
-          .eq("is_active", true)
-          .order("name");
-      if (departmentError) {
-        if (!cancelled) {
-          setOptionsError(
-            "Could not load departments. Check the departments table SELECT RLS policy."
-          );
-          setLoadingOptions(false);
-        }
-        return;
-      }
-      const { data: assignmentRows, error: assignmentError } =
-        await supabase
-          .from("doctor_clinic_assignments")
-          .select("doctor_id, department_id")
-          .eq("clinic_id", clinicId)
-          .eq("is_active", true);
-      if (assignmentError) {
-        if (!cancelled) {
-          setOptionsError(
-            "Could not load doctors for this clinic. Check doctor assignment SELECT permissions."
-          );
-          setDepartments(
-            (departmentRows ?? []).map((row) => ({
-              id: row.id,
-              name: row.name,
-            }))
-          );
-          setLoadingOptions(false);
-        }
-        return;
-      }
-      const assignments = assignmentRows ?? [];
-      const doctorIds = [
-        ...new Set(assignments.map((row) => row.doctor_id)),
-      ];
-      let doctorOptions: Doctor[] = [];
-      if (doctorIds.length > 0) {
-        const { data: doctorRows, error: doctorsError } =
+
+      try {
+        const supabase = createClient();
+
+        const { data: departmentRows, error: departmentError } =
           await supabase
+            .from("departments")
+            .select("id, name")
+            .eq("clinic_id", clinicId)
+            .eq("is_active", true)
+            .order("name");
+
+        if (departmentError) throw departmentError;
+
+        const { data: assignments, error: assignmentError } =
+          await supabase
+            .from("doctor_clinic_assignments")
+            .select("doctor_id, department_id")
+            .eq("clinic_id", clinicId)
+            .eq("is_active", true);
+
+        if (assignmentError) throw assignmentError;
+
+        const doctorIds = [
+          ...new Set((assignments ?? []).map((item) => item.doctor_id)),
+        ];
+
+        let doctorRows: { id: string; full_name: string }[] = [];
+
+        if (doctorIds.length > 0) {
+          const { data, error } = await supabase
             .from("doctors")
             .select("id, full_name")
+            .eq("is_active", true)
             .in("id", doctorIds)
-            .eq("is_active", true);
-        if (doctorsError) {
-          if (!cancelled) {
-            setOptionsError(
-              "Could not load doctor records. Check doctors SELECT permissions."
-            );
-          }
-        } else {
-          const doctorRecords = doctorRows ?? [];
-          doctorOptions = doctorRecords.map((doctor) => ({
-            id: doctor.id,
-            name: doctor.full_name?.trim() || "Unnamed doctor",
-            departmentIds: assignments
-              .filter(
-                (row) => row.doctor_id === doctor.id && row.department_id
-              )
-              .map((row) => row.department_id as string),
-          }));
+            .order("full_name");
+
+          if (error) throw error;
+
+          doctorRows = data ?? [];
+        }
+
+        const mappedDoctors: Doctor[] = doctorRows.map((doctor) => ({
+          id: doctor.id,
+          full_name: doctor.full_name,
+          departmentIds: [
+            ...new Set(
+              (assignments ?? [])
+                .filter((assignment) => assignment.doctor_id === doctor.id)
+                .map((assignment) => assignment.department_id)
+                .filter((id): id is string => Boolean(id))
+            ),
+          ],
+        }));
+
+        if (!cancelled) {
+          setDepartments(departmentRows ?? []);
+          setDoctors(mappedDoctors);
+        }
+      } catch (error) {
+        console.error("Team options loading error:", error);
+
+        if (!cancelled) {
+          setOptionsError(
+            "Unable to load departments and doctors. Check your clinic permissions and try again."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingOptions(false);
         }
       }
-      if (!cancelled) {
-        setDepartments(
-          (departmentRows ?? []).map((row) => ({
-            id: row.id,
-            name: row.name,
-          }))
-        );
-        setDoctors(doctorOptions);
-        setLoadingOptions(false);
-      }
     }
-    void loadClinicOptions();
+
+    loadOptions();
+
     return () => {
       cancelled = true;
     };
   }, [clinicId]);
-  // Toggle checkbox selections.
-  function toggleSelection(
+
+  // Display all doctors if no department is selected.
+  // Otherwise display only doctors assigned to selected departments.
+  const visibleDoctors = useMemo(() => {
+    if (selectedDepartments.length === 0) {
+      return doctors;
+    }
+
+    return doctors.filter((doctor) =>
+      doctor.departmentIds.some((departmentId) =>
+        selectedDepartments.includes(departmentId)
+      )
+    );
+  }, [doctors, selectedDepartments]);
+
+  // Common selection toggle.
+  function toggleValue(
     value: string,
     current: string[],
-    update: (values: string[]) => void
+    setter: (next: string[]) => void
   ) {
-    update(
+    setter(
       current.includes(value)
         ? current.filter((item) => item !== value)
         : [...current, value]
     );
   }
-  // Reset the invitation form.
+
+  // Department selection also removes doctors that are no longer visible.
+  function handleDepartmentToggle(departmentId: string) {
+    const nextDepartments = selectedDepartments.includes(departmentId)
+      ? selectedDepartments.filter((id) => id !== departmentId)
+      : [...selectedDepartments, departmentId];
+
+    setSelectedDepartments(nextDepartments);
+
+    setSelectedDoctors((currentDoctors) =>
+      currentDoctors.filter((doctorId) => {
+        const doctor = doctors.find((item) => item.id === doctorId);
+
+        // No selected departments means all departments are allowed.
+        if (nextDepartments.length === 0) {
+          return true;
+        }
+
+        // Retain only doctors belonging to at least one selected department.
+        return Boolean(
+          doctor?.departmentIds.some((id) =>
+            nextDepartments.includes(id)
+          )
+        );
+      })
+    );
+  }
+
+  // Reset invitation form.
   function resetForm() {
     setName("");
+    setEmail("");
     setPhone("");
     setCountryCode("+91");
-    setEmail("");
     setRole("receptionist");
+
     setSelectedScreens(["waitlist", "reservations"]);
     setSelectedDepartments([]);
+
     setRestrictDoctors(false);
     setSelectedDoctors([]);
   }
-  // Send invitation.
-  async function handleSubmit(
-    event: React.FormEvent<HTMLFormElement>
-  ) {
+
+  // Submit invitation.
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
     if (sending) return;
+
     setNotice("");
-    setNoticeType("");
     setInvitationLink("");
-    const normalizedEmail = email.trim();
-    if (!normalizedEmail) {
+
+    if (!name.trim()) {
       setNoticeType("error");
-      setNotice("Please enter the staff member's email address.");
+      setNotice("Enter the staff member's full name.");
       return;
     }
-    if (
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
-    ) {
+
+    if (!email.trim()) {
       setNoticeType("error");
-      setNotice("Please enter a valid email address.");
+      setNotice("Enter the staff member's email address.");
       return;
     }
-    if (
-      phone.trim() &&
-      !/^[0-9\s()-]{7,15}$/.test(phone.trim())
-    ) {
-      setNoticeType("error");
-      setNotice("Please enter a valid phone number.");
-      return;
-    }
+
     if (role === "receptionist" && selectedScreens.length === 0) {
       setNoticeType("error");
-      setNotice("Select at least one screen permission.");
+      setNotice("Select at least one screen.");
       return;
     }
-    if (
-      restrictDoctors &&
-      selectedDoctors.length === 0
-    ) {
+
+    if (restrictDoctors && selectedDoctors.length === 0) {
+      setNoticeType("error");
+      setNotice("Select at least one doctor.");
+      return;
+    }
+
+    if (optionsError) {
       setNoticeType("error");
       setNotice(
-        "Select at least one doctor or turn off doctor restriction."
+        "Department and doctor information could not be loaded. Please refresh the page and try again."
       );
       return;
     }
+
+    const fullPhone = phone.trim()
+      ? `${countryCode}${phone.trim()}`
+      : undefined;
+
     try {
       setSending(true);
+
       const result = await sendTeamInvitation({
         clinicId,
         fullName: name.trim(),
-        email: normalizedEmail,
-        phone: phone.trim()
-          ? `${countryCode} ${phone.trim()}`
-          : "",
+        email: email.trim(),
+        phone: fullPhone,
         role,
         screenPermissions:
           role === "receptionist" ? selectedScreens : [],
+        departmentIds: selectedDepartments,
+        restrictDoctors,
+        doctorIds: restrictDoctors ? selectedDoctors : [],
       });
+
       if (!result.success) {
         setNoticeType("error");
         setNotice(result.message);
         return;
       }
+
       setNoticeType("success");
       setNotice(result.message);
       setInvitationLink(result.invitationLink ?? "");
+
       resetForm();
     } catch (error) {
-      console.error("Invitation submission error:", error);
+      console.error("Invitation submit error:", error);
+
       setNoticeType("error");
-      setNotice(
-        "Something went wrong while generating the invitation link. Please try again."
-      );
+      setNotice("Something went wrong. Please try again.");
     } finally {
       setSending(false);
     }
   }
+
+  // Copy invitation link.
   async function copyInvitationLink() {
     if (!invitationLink) return;
+
     try {
       await navigator.clipboard.writeText(invitationLink);
+
       setNoticeType("success");
-      setNotice("Invitation link copied. Share it privately with the invited member.");
+      setNotice("Invitation link copied.");
     } catch {
       setNoticeType("error");
-      setNotice("Copy failed. Select the link and copy it manually.");
+      setNotice("Unable to copy the invitation link.");
     }
   }
-  // Filter doctors according to selected departments.
-  const visibleDoctors = selectedDepartments.length
-    ? doctors.filter((doctor) =>
-      doctor.departmentIds.some((id) =>
-        selectedDepartments.includes(id)
-      )
-    )
-    : doctors;
+
   return (
-    <div className="min-h-screen">
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <section className="rounded-xl border border-violet-100 bg-white p-5 shadow-sm sm:p-6">
-          <h2 className="text-lg font-semibold">
-            Invite a team member
+    <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
+      <div className="mb-7">
+        <h1 className="text-2xl font-bold text-slate-900">
+          Team Management
+        </h1>
+
+        <p className="mt-2 text-sm text-slate-500">
+          Invite staff members and control which parts of your clinic they can
+          access.
+        </p>
+      </div>
+
+      <form
+        onSubmit={handleSubmit}
+        className="space-y-7 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7"
+      >
+        {/* STAFF DETAILS */}
+
+        <section>
+          <h2 className="text-base font-semibold text-slate-900">
+            Staff details
           </h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Enter the member's details and configure their access.
-          </p>
-          <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div>
               <label
-                htmlFor="memberName"
-                className={labelClass}
+                htmlFor="staff-name"
+                className="block text-sm font-medium text-slate-700"
               >
-                Name (optional)
+                Full name
               </label>
+
               <input
-                id="memberName"
+                id="staff-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Ramesh"
-                className={inputClass}
+                onChange={(event) => setName(event.target.value)}
+                required
+                maxLength={100}
+                placeholder="Enter full name"
+                className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
               />
             </div>
+
             <div>
               <label
-                htmlFor="memberPhone"
-                className={labelClass}
+                htmlFor="staff-email"
+                className="block text-sm font-medium text-slate-700"
               >
-                Phone number (optional)
+                Email address
               </label>
-              <div className="flex gap-2">
+
+              <input
+                id="staff-email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+                maxLength={254}
+                placeholder="staff@example.com"
+                className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="staff-phone"
+                className="block text-sm font-medium text-slate-700"
+              >
+                Phone number
+              </label>
+
+              <div className="mt-2 flex gap-2">
                 <select
-                  aria-label="Country code"
                   value={countryCode}
-                  onChange={(e) =>
-                    setCountryCode(e.target.value)
-                  }
-                  className={`${inputClass} w-[105px] shrink-0`}
+                  onChange={(event) => setCountryCode(event.target.value)}
+                  className="w-24 rounded-lg border border-slate-300 px-2 py-2.5 text-sm"
+                  aria-label="Country code"
                 >
-                  <option value="+91">IN +91</option>
-                  <option value="+1">US +1</option>
-                  <option value="+44">UK +44</option>
-                  <option value="+971">UAE +971</option>
+                  <option value="+91">+91</option>
+                  <option value="+1">+1</option>
+                  <option value="+44">+44</option>
+                  <option value="+971">+971</option>
                 </select>
+
                 <input
-                  id="memberPhone"
+                  id="staff-phone"
                   type="tel"
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="9876543210"
-                  className={inputClass}
+                  onChange={(event) => setPhone(event.target.value)}
+                  maxLength={20}
+                  placeholder="Phone number"
+                  className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
                 />
               </div>
             </div>
+
             <div>
               <label
-                htmlFor="memberEmail"
-                className={labelClass}
+                htmlFor="staff-role"
+                className="block text-sm font-medium text-slate-700"
               >
-                Email
+                Staff role
               </label>
-              <input
-                id="memberEmail"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="staff@business.com"
-                required
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="memberRole"
-                className={labelClass}
-              >
-                Role
-              </label>
+
               <select
-                id="memberRole"
+                id="staff-role"
                 value={role}
-                onChange={(e) =>
-                  setRole(e.target.value as MemberRole)
-                }
-                className={inputClass}
+                onChange={(event) => {
+                  const nextRole = event.target.value as StaffRole;
+
+                  setRole(nextRole);
+
+                  if (nextRole !== "receptionist") {
+                    setSelectedScreens([]);
+                  } else {
+                    setSelectedScreens(["waitlist", "reservations"]);
+                  }
+                }}
+                className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-violet-500"
               >
-                <option value="administrator">
-                  Clinic Administrator
-                </option>
-                <option value="receptionist">
-                  Receptionist
-                </option>
-                <option value="doctor">
-                  Doctor
-                </option>
+                <option value="receptionist">Receptionist</option>
+                <option value="doctor">Doctor</option>
+                <option value="administrator">Administrator</option>
               </select>
             </div>
           </div>
-          <div className="mt-6">
-            <h3 className="mb-3 text-sm font-medium text-slate-600">
-              Screens they can open
-            </h3>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {screenOptions.map((screen) => {
-                const checked = selectedScreens.includes(
-                  screen.id
-                );
-                return (
-                  <label
-                    key={screen.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${checked
-                      ? "border-violet-400 bg-violet-50"
-                      : "border-slate-200 hover:border-violet-200"
-                      }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() =>
-                        toggleSelection(
-                          screen.id,
-                          selectedScreens,
-                          setSelectedScreens
-                        )
-                      }
-                      className="mt-1 h-4 w-4 accent-violet-600"
-                    />
-                    <span>
-                      <span className="block text-sm font-medium">
-                        {screen.label}
-                      </span>
-                      <span className="mt-1 block text-xs leading-5 text-slate-500">
-                        {screen.description}
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-          <div className="mt-6 border-t border-slate-100 pt-5">
-            <h3 className="text-sm font-medium text-slate-600">
-              Department access
-            </h3>
-            <p className="mt-1 text-xs text-slate-500">
-              Departments shown here belong to the selected
-              clinic. Selecting a department filters the doctor
-              list below.
-            </p>
-            {loadingOptions && (
-              <p className="mt-3 text-sm text-slate-500">
-                Loading clinic departments and doctors...
-              </p>
-            )}
-            {optionsError && (
-              <p
-                role="alert"
-                className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800"
+        </section>
+
+        <div className="border-t border-slate-100" />
+
+        {/* SCREEN PERMISSIONS */}
+
+        <section>
+          <h2 className="text-base font-semibold text-slate-900">
+            Screen permissions
+          </h2>
+
+          <p className="mt-1 text-sm text-slate-500">
+            Select the screens this staff member can access. These selections
+            are saved for receptionist accounts.
+          </p>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {screenOptions.map((screen) => (
+              <label
+                key={screen.id}
+                className={`flex items-center gap-3 rounded-lg border p-3 text-sm ${
+                  role !== "receptionist"
+                    ? "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-400"
+                    : "cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
               >
-                {optionsError}
-              </p>
-            )}
-            {!loadingOptions &&
-              departments.length === 0 && (
-                <p className="mt-3 text-sm text-slate-500">
-                  No active departments were found for this clinic.
+                <input
+                  type="checkbox"
+                  checked={selectedScreens.includes(screen.id)}
+                  disabled={role !== "receptionist"}
+                  onChange={() =>
+                    toggleValue(
+                      screen.id,
+                      selectedScreens,
+                      setSelectedScreens
+                    )
+                  }
+                  className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                />
+
+                {screen.label}
+              </label>
+            ))}
+          </div>
+
+          {role !== "receptionist" && (
+            <p className="mt-3 text-xs text-slate-400">
+              Screen-level permissions are currently configured for
+              receptionists only.
+            </p>
+          )}
+        </section>
+
+        <div className="border-t border-slate-100" />
+
+        {/* DEPARTMENT ACCESS */}
+
+        <section>
+          <h2 className="text-base font-semibold text-slate-900">
+            Department access
+          </h2>
+
+          <p className="mt-1 text-sm text-slate-500">
+            Leave all departments unselected to allow access to every
+            department. Select departments to restrict access.
+          </p>
+
+          {loadingOptions ? (
+            <p className="mt-4 text-sm text-slate-500">
+              Loading departments and doctors...
+            </p>
+          ) : optionsError ? (
+            <p className="mt-4 text-sm text-red-600">{optionsError}</p>
+          ) : departments.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-500">
+              No active departments are available for this clinic.
+            </p>
+          ) : (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {departments.map((department) => (
+                <label
+                  key={department.id}
+                  className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedDepartments.includes(department.id)}
+                    onChange={() =>
+                      handleDepartmentToggle(department.id)
+                    }
+                    className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                  />
+
+                  {department.name}
+                </label>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <div className="border-t border-slate-100" />
+
+        {/* DOCTOR ACCESS */}
+
+        <section>
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              Doctor access
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-500">
+              Enable this option to allow access only to selected doctors.
+              When disabled, all doctors within the permitted department
+              scope are available.
+            </p>
+          </div>
+
+          <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-4">
+            <input
+              type="checkbox"
+              checked={restrictDoctors}
+              onChange={(event) => {
+                setRestrictDoctors(event.target.checked);
+
+                if (!event.target.checked) {
+                  setSelectedDoctors([]);
+                }
+              }}
+              className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+            />
+
+            <span className="text-sm font-medium text-slate-800">
+              Restrict access to selected doctors only
+            </span>
+          </label>
+
+          {restrictDoctors && (
+            <div className="mt-4">
+              {loadingOptions ? (
+                <p className="text-sm text-slate-500">
+                  Loading doctors...
+                </p>
+              ) : optionsError ? (
+                <p className="text-sm text-red-600">{optionsError}</p>
+              ) : visibleDoctors.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No active doctors are available for the selected
+                  department(s).
+                </p>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {visibleDoctors.map((doctor) => (
+                    <label
+                      key={doctor.id}
+                      className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedDoctors.includes(doctor.id)}
+                        onChange={() =>
+                          toggleValue(
+                            doctor.id,
+                            selectedDoctors,
+                            setSelectedDoctors
+                          )
+                        }
+                        className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                      />
+
+                      {doctor.full_name}
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {selectedDoctors.length > 0 && (
+                <p className="mt-3 text-xs text-slate-500">
+                  {selectedDoctors.length} doctor(s) selected.
                 </p>
               )}
-            {departments.length > 0 && (
-              <div className="mt-3 grid gap-2 rounded-xl border border-slate-200 p-4 sm:grid-cols-2">
-                {departments.map((department) => (
-                  <label
-                    key={department.id}
-                    className="flex cursor-pointer items-center gap-2 text-sm"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedDepartments.includes(
-                        department.id
-                      )}
-                      onChange={() =>
-                        toggleSelection(
-                          department.id,
-                          selectedDepartments,
-                          setSelectedDepartments
-                        )
-                      }
-                      className="h-4 w-4 accent-violet-600"
-                    />
-                    {department.name}
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="mt-5">
-            <label className="flex cursor-pointer items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={restrictDoctors}
-                onChange={(e) => {
-                  setRestrictDoctors(e.target.checked);
-                  if (!e.target.checked) {
-                    setSelectedDoctors([]);
-                  }
-                }}
-                className="h-4 w-4 accent-violet-600"
-              />
-              Restrict access to specific doctors
-            </label>
-            {restrictDoctors && (
-              <div className="mt-3 rounded-xl border border-slate-200 p-4">
-                {visibleDoctors.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    No doctors found for the selected department(s).
-                  </p>
-                ) : (
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {visibleDoctors.map((doctor) => (
-                      <label
-                        key={doctor.id}
-                        className="flex cursor-pointer items-center gap-2 text-sm"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedDoctors.includes(
-                            doctor.id
-                          )}
-                          onChange={() =>
-                            toggleSelection(
-                              doctor.id,
-                              selectedDoctors,
-                              setSelectedDoctors
-                            )
-                          }
-                          className="h-4 w-4 accent-violet-600"
-                        />
-                        {doctor.name}
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button
-              type="submit"
-              disabled={sending}
-              className="rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {sending
-                ? "Generating link..."
-                : "Generate Invitation Link"}
-            </button>
-          </div>
-          {notice && (
-            <p
-              role="status"
-              aria-live="polite"
-              className={`mt-4 rounded-lg p-3 text-sm leading-6 ${noticeType === "success"
-                ? "bg-green-50 text-green-800"
-                : "bg-red-50 text-red-700"
-                }`}
-            >
-              {notice}
-            </p>
-          )}
-          {invitationLink && (
-            <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-4">
-              <h3 className="text-sm font-semibold text-violet-900">Invitation link ready</h3>
-              <p className="mt-1 text-xs text-violet-700">Copy and share privately. Expires after 24 hours; single use.</p>
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                <input readOnly aria-label="Generated invitation link" value={invitationLink}
-                  onFocus={(event) => event.currentTarget.select()}
-                  className="min-w-0 flex-1 rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs text-slate-700" />
-                <button type="button" onClick={copyInvitationLink}
-                  className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700">Copy Link</button>
-              </div>
             </div>
           )}
-          <p className="mt-4 text-xs leading-5 text-slate-500">
-            Invitation links are generated using Supabase Auth; no email is sent.
-            Screen permissions are saved to the database when the invitation is accepted. Department and doctor-specific restrictions are currently not persisted.
-          </p>
         </section>
-      </form>
-      <section className="mt-7 rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <h2 className="text-lg font-semibold">
-          Team invitations
-        </h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Staff invitations will be managed through the
-          invitation database.
-        </p>
-        <div className="mt-5 rounded-lg bg-slate-50 p-4">
-          <p className="text-sm font-medium text-slate-700">
-            Invitation workflow
-          </p>
-          <p className="mt-2 text-sm leading-6 text-slate-500">
-            Generate a link, copy it and share it privately with the staff member.
-            The link expires after 24 hours. After acceptance, the clinic
-            membership will be activated.
-          </p>
+
+        {/* NOTIFICATIONS */}
+
+        {notice && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`rounded-lg p-3 text-sm ${
+              noticeType === "success"
+                ? "bg-green-50 text-green-800"
+                : "bg-red-50 text-red-700"
+            }`}
+          >
+            {notice}
+          </div>
+        )}
+
+        {/* INVITATION LINK */}
+
+        {invitationLink && (
+          <div className="rounded-xl border border-green-200 bg-green-50 p-4">
+            <p className="text-sm font-semibold text-green-900">
+              Invitation link
+            </p>
+
+            <p className="mt-1 break-all text-xs text-green-800">
+              {invitationLink}
+            </p>
+
+            <button
+              type="button"
+              onClick={copyInvitationLink}
+              className="mt-3 rounded-lg border border-green-300 bg-white px-3 py-2 text-sm font-medium text-green-800 hover:bg-green-100"
+            >
+              Copy invitation link
+            </button>
+          </div>
+        )}
+
+        {/* ACTION BUTTONS */}
+
+        <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={resetForm}
+            disabled={sending}
+            className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            Clear
+          </button>
+
+          <button
+            type="submit"
+            disabled={sending || loadingOptions || Boolean(optionsError)}
+            className="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {sending ? "Sending invitation..." : "Send invitation"}
+          </button>
         </div>
-      </section>
-    </div>
+
+        <p className="text-xs leading-5 text-slate-400">
+          Invitation links expire after 7 days. Screen permissions,
+          department restrictions and doctor restrictions are saved when the
+          invited user accepts the invitation. An invitation email is sent
+          through EmailJS.
+        </p>
+      </form>
+    </main>
   );
 }

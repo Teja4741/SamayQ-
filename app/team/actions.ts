@@ -1,8 +1,13 @@
+
 "use server";
+
 import "server-only";
+
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+
 type StaffRole = "administrator" | "receptionist" | "doctor";
+
 const allowedScreens = [
   "waitlist",
   "reservations",
@@ -14,11 +19,7 @@ const allowedScreens = [
   "team",
   "billing",
 ] as const;
-type InvitationResult = {
-  success: boolean;
-  message: string;
-  invitationLink?: string;
-};
+
 type InvitationInput = {
   clinicId: string;
   fullName: string;
@@ -26,159 +27,151 @@ type InvitationInput = {
   phone?: string;
   role: StaffRole;
   screenPermissions: string[];
+  departmentIds: string[];
+  restrictDoctors: boolean;
+  doctorIds: string[];
 };
+
+type InvitationResult = {
+  success: boolean;
+  message: string;
+  invitationLink?: string;
+};
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
 export async function sendTeamInvitation(
   input: InvitationInput
 ): Promise<InvitationResult> {
-  let admin: ReturnType<typeof createAdminClient> | null = null;
-  let invitationId: string | null = null;
   try {
-    // 1. Validate input
-    if (!input || typeof input !== "object") {
-      return {
-        success: false,
-        message: "Invalid invitation details.",
-      };
+    const clinicId = input.clinicId?.trim();
+    const fullName = input.fullName?.trim();
+    const email = input.email?.trim().toLowerCase();
+    const phone = input.phone?.trim() || null;
+    const role = input.role;
+
+    if (!clinicId || !isUuid(clinicId)) {
+      return { success: false, message: "Invalid clinic." };
     }
-    const {
-      clinicId,
-      fullName,
-      email,
-      phone,
-      role,
-      screenPermissions,
-    } = input;
+
+    if (!fullName || fullName.length > 100) {
+      return { success: false, message: "Enter a valid full name." };
+    }
+
     if (
-      typeof clinicId !== "string" ||
-      typeof email !== "string" ||
-      typeof role !== "string" ||
-      !clinicId.trim() ||
-      !email.trim() ||
-      !role
+      !email ||
+      email.length > 254 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     ) {
-      return {
-        success: false,
-        message: "Clinic, email and role are required.",
-      };
+      return { success: false, message: "Enter a valid email address." };
     }
-    const normalizedEmail = email.trim().toLowerCase();
-    const normalizedName =
-      typeof fullName === "string" ? fullName.trim() : "";
-    const normalizedPhone =
-      typeof phone === "string" ? phone.trim() : "";
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return {
-        success: false,
-        message: "Please enter a valid email address.",
-      };
+
+    if (phone && phone.length > 25) {
+      return { success: false, message: "Phone number is too long." };
     }
-    if (normalizedName.length > 100) {
-      return {
-        success: false,
-        message: "Name must be 100 characters or fewer.",
-      };
+
+    if (!["administrator", "receptionist", "doctor"].includes(role)) {
+      return { success: false, message: "Invalid staff role." };
     }
-    if (normalizedPhone.length > 20) {
-      return {
-        success: false,
-        message: "Phone number must be 20 characters or fewer.",
-      };
-    }
-    // Validate selected screen permissions.
-    if (!Array.isArray(screenPermissions)) {
-      return {
-        success: false,
-        message: "Invalid screen permissions.",
-      };
-    }
-    const uniqueScreens = [...new Set(screenPermissions)];
+
+    const uniqueScreens = [...new Set(input.screenPermissions ?? [])];
+    const departmentIds = [...new Set(input.departmentIds ?? [])];
+    const doctorIds = [...new Set(input.doctorIds ?? [])];
+    const restrictDoctors = input.restrictDoctors === true;
+
     if (
       uniqueScreens.some(
-        (screen) =>
-          typeof screen !== "string" ||
-          !allowedScreens.includes(screen as (typeof allowedScreens)[number])
+        (screen) => !allowedScreens.includes(screen as (typeof allowedScreens)[number])
       )
     ) {
-      return {
-        success: false,
-        message: "One or more selected screens are invalid.",
-      };
+      return { success: false, message: "Invalid screen permission." };
     }
+
     if (role === "receptionist" && uniqueScreens.length === 0) {
       return {
         success: false,
-        message: "Select at least one screen permission for the receptionist.",
+        message: "Select at least one screen for the receptionist.",
       };
     }
-    // 2. Validate role
-    const allowedRoles: StaffRole[] = [
-      "administrator",
-      "receptionist",
-      "doctor",
-    ];
-    if (!allowedRoles.includes(role as StaffRole)) {
+
+    if (
+      departmentIds.some((id) => !isUuid(id)) ||
+      doctorIds.some((id) => !isUuid(id))
+    ) {
       return {
         success: false,
-        message: "Invalid staff role.",
+        message: "Invalid department or doctor selection.",
       };
     }
-    // 3. Verify logged-in user
+
+    if (restrictDoctors && doctorIds.length === 0) {
+      return {
+        success: false,
+        message: "Select at least one doctor when doctor restriction is enabled.",
+      };
+    }
+
+    if (!restrictDoctors && doctorIds.length > 0) {
+      return {
+        success: false,
+        message: "Disable doctor restriction or clear the selected doctors.",
+      };
+    }
+
+    // Verify the logged-in inviter.
     const supabase = await createClient();
     const {
       data: { user },
       error: authError,
     } = await supabase.auth.getUser();
+
     if (authError || !user) {
       return {
         success: false,
-        message: "Your session has expired. Please log in again.",
+        message: "Please sign in again.",
       };
     }
-    // 4. Verify inviter permissions
-    const { data: platformAdmin, error: platformError } =
-      await supabase
-        .from("platform_admins")
-        .select("user_id")
-        .eq("user_id", user.id)
-        .maybeSingle();
+
+    const admin = createAdminClient();
+
+    // Verify platform administrator or clinic administrator.
+    const { data: platformAdmin, error: platformError } = await admin
+      .from("platform_admins")
+      .select("user_id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
     if (platformError) {
-      console.error("Platform admin check:", platformError);
+      console.error("Platform admin lookup:", platformError);
       return {
         success: false,
         message: "Unable to verify your permissions.",
       };
     }
+
     if (!platformAdmin) {
-      const { data: membership, error: membershipError } =
-        await supabase
-          .from("clinic_memberships")
-          .select("id")
-          .eq("clinic_id", clinicId)
-          .eq("user_id", user.id)
-          .eq("role", "administrator")
-          .eq("is_active", true)
-          .maybeSingle();
-      if (membershipError) {
-        console.error(
-          "Membership validation error:",
-          membershipError
-        );
+      const { data: membership, error: membershipError } = await admin
+        .from("clinic_memberships")
+        .select("id")
+        .eq("clinic_id", clinicId)
+        .eq("user_id", user.id)
+        .eq("role", "administrator")
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (membershipError || !membership) {
         return {
           success: false,
-          message: "Unable to verify your clinic permissions.",
-        };
-      }
-      if (!membership) {
-        return {
-          success: false,
-          message:
-            "You are not authorized to invite staff to this clinic.",
+          message: "You are not authorized to invite staff to this clinic.",
         };
       }
     }
-    // 5. Verify clinic
-    admin = createAdminClient();
 
+    // Verify the clinic.
     const { data: clinic, error: clinicError } = await admin
       .from("clinics")
       .select("id, name, is_active")
@@ -186,7 +179,7 @@ export async function sendTeamInvitation(
       .maybeSingle();
 
     if (clinicError) {
-      console.error("Clinic validation error:", clinicError);
+      console.error("Clinic lookup:", clinicError);
       return {
         success: false,
         message: "Unable to verify the clinic.",
@@ -200,7 +193,7 @@ export async function sendTeamInvitation(
       };
     }
 
-    // 6. Read the actual booking configuration
+    // Read the actual booking configuration.
     const { data: clinicSettings, error: settingsError } = await admin
       .from("clinic_settings")
       .select(
@@ -209,211 +202,235 @@ export async function sendTeamInvitation(
       .eq("clinic_id", clinicId)
       .maybeSingle();
 
-    if (settingsError) {
-      console.error("Settings validation error:", settingsError);
+    if (settingsError || !clinicSettings) {
+      console.error("Clinic settings lookup:", settingsError);
       return {
         success: false,
-        message: "Unable to verify clinic booking settings.",
+        message: "Clinic booking settings could not be loaded.",
       };
     }
 
-    if (
-      role === "doctor" &&
-      clinicSettings?.doctor_booking_enabled !== true
-    ) {
+    if (role === "doctor" && clinicSettings.doctor_booking_enabled !== true) {
       return {
         success: false,
-        message:
-          "Doctor invitations require doctor-wise booking to be enabled.",
+        message: "Doctor invitations are disabled for this clinic.",
       };
     }
-    // 7. Verify EmailJS configuration
-    const emailjsServiceId = process.env.EMAILJS_SERVICE_ID;
-    const emailjsTemplateId = process.env.EMAILJS_TEMPLATE_ID;
-    const emailjsPublicKey = process.env.EMAILJS_PUBLIC_KEY;
-    const emailjsPrivateKey = process.env.EMAILJS_PRIVATE_KEY;
-    if (
-      !emailjsServiceId ||
-      !emailjsTemplateId ||
-      !emailjsPublicKey ||
-      !emailjsPrivateKey
-    ) {
-      console.error("EmailJS environment configuration is incomplete.");
-      return {
-        success: false,
-        message: "Email service configuration is missing.",
-      };
-    }
-    // 8. Check for an existing pending invitation
-    const now = new Date().toISOString();
-    const { data: existingInvitation, error: existingError } =
-      await admin
-        .from("team_invitations")
+
+    // Verify every selected department belongs to this clinic.
+    if (departmentIds.length > 0) {
+      const { data: departments, error: departmentError } = await admin
+        .from("departments")
         .select("id")
         .eq("clinic_id", clinicId)
-        .ilike("email", normalizedEmail)
-        .eq("status", "pending")
-        .gt("expires_at", now)
-        .limit(1)
-        .maybeSingle();
+        .eq("is_active", true)
+        .in("id", departmentIds);
+
+      if (
+        departmentError ||
+        !departments ||
+        departments.length !== departmentIds.length
+      ) {
+        return {
+          success: false,
+          message:
+            "One or more selected departments are invalid or inactive.",
+        };
+      }
+    }
+
+    // Verify selected doctors have active assignments in this clinic.
+    if (doctorIds.length > 0) {
+      let doctorQuery = admin
+        .from("doctor_clinic_assignments")
+        .select("doctor_id, department_id")
+        .eq("clinic_id", clinicId)
+        .eq("is_active", true)
+        .in("doctor_id", doctorIds);
+
+      if (departmentIds.length > 0) {
+        doctorQuery = doctorQuery.in("department_id", departmentIds);
+      }
+
+      const { data: assignments, error: assignmentError } =
+        await doctorQuery;
+
+      const assignedDoctorIds = [
+        ...new Set((assignments ?? []).map((row) => row.doctor_id)),
+      ];
+
+      if (
+        assignmentError ||
+        assignedDoctorIds.length !== doctorIds.length
+      ) {
+        return {
+          success: false,
+          message:
+            "One or more selected doctors are not actively assigned to the selected clinic/departments.",
+        };
+      }
+    }
+
+    // Prevent duplicate pending invitations.
+    const { data: existingInvitation, error: existingError } = await admin
+      .from("team_invitations")
+      .select("id")
+      .eq("clinic_id", clinicId)
+      .ilike("email", email)
+      .eq("status", "pending")
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+
     if (existingError) {
-      console.error("Existing invitation check:", existingError);
+      console.error("Existing invitation lookup:", existingError);
       return {
         success: false,
         message: "Unable to check existing invitations.",
       };
     }
+
     if (existingInvitation) {
       return {
         success: false,
-        message:
-          "A pending invitation already exists for this email.",
+        message: "A pending invitation already exists for this email.",
       };
     }
-    // 9. Prepare invitation ID and URLs
-    invitationId = crypto.randomUUID();
-    const siteUrl = (
-      process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"
-    ).replace(/\/+$/, "");
-    const acceptUrl = new URL("/auth/accept-invitation", siteUrl);
-    acceptUrl.searchParams.set("invitationId", invitationId);
-    const confirmUrl = new URL("/auth/confirm", siteUrl);
-    confirmUrl.searchParams.set(
-      "next",
-      acceptUrl.pathname + acceptUrl.search
-    );
-    // 10. Generate Supabase invitation link
-    const {
-      data: linkData,
-      error: linkError,
-    } = await admin.auth.admin.generateLink({
-      type: "invite",
-      email: normalizedEmail,
-      options: {
-        redirectTo: confirmUrl.toString(),
-        data: {
-          full_name: normalizedName,
-        },
-      },
-    });
-    if (linkError || !linkData?.properties?.hashed_token) {
-      console.error("Supabase invitation error:", linkError);
-      invitationId = null;
+
+    // EmailJS configuration.
+    const serviceId = process.env.EMAILJS_SERVICE_ID;
+    const templateId = process.env.EMAILJS_TEMPLATE_ID;
+    const publicKey = process.env.EMAILJS_PUBLIC_KEY;
+    const privateKey = process.env.EMAILJS_PRIVATE_KEY;
+
+    if (!serviceId || !templateId || !publicKey || !privateKey) {
+      console.error("EmailJS environment variables are missing.");
       return {
         success: false,
-        message:
-          linkError?.message || "Unable to generate invitation link.",
+        message: "Invitation email service is not configured.",
       };
     }
-    // 11. Get the hashed token
-    const tokenHash = linkData.properties.hashed_token;
-    // 12. Construct confirmation URL
-    const invitationConfirmUrl = new URL(confirmUrl.toString());
-    invitationConfirmUrl.searchParams.set("token_hash", tokenHash);
-    invitationConfirmUrl.searchParams.set("type", "invite");
-    // 13. Save invitation in database
+
+    const siteUrl = (
+      process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"
+    ).replace(/\/$/, "");
+
+    const invitationId = crypto.randomUUID();
+
+    const acceptPath = `/auth/accept-invitation?invitationId=${invitationId}`;
+    const redirectTo = `${siteUrl}/auth/confirm?next=${encodeURIComponent(
+      acceptPath
+    )}`;
+
+    // Generate Supabase invite token.
+    const { data: generated, error: generateError } =
+      await admin.auth.admin.generateLink({
+        type: "invite",
+        email,
+        options: {
+          redirectTo,
+          data: {
+            full_name: fullName,
+          },
+        },
+      });
+
+    if (generateError || !generated?.properties?.hashed_token) {
+      console.error("Invite link generation:", generateError);
+      return {
+        success: false,
+        message: "Could not generate the invitation link.",
+      };
+    }
+
+    const hashedToken = generated.properties.hashed_token;
+
+    const invitationLink =
+      `${siteUrl}/auth/confirm` +
+      `?next=${encodeURIComponent(acceptPath)}` +
+      `&token_hash=${encodeURIComponent(hashedToken)}` +
+      `&type=invite`;
+
+    // Save invitation and its restrictions.
     const expiresAt = new Date(
       Date.now() + 7 * 24 * 60 * 60 * 1000
     ).toISOString();
+
     const { error: insertError } = await admin
       .from("team_invitations")
       .insert({
         id: invitationId,
         clinic_id: clinicId,
-        email: normalizedEmail,
-        full_name: normalizedName || null,
-        phone: normalizedPhone || null,
+        email,
+        full_name: fullName,
+        phone,
         role,
-        screen_permissions:
-          role === "receptionist" ? uniqueScreens : [],
         invited_by: user.id,
         status: "pending",
-        token_hash: tokenHash,
+        token_hash: hashedToken,
         expires_at: expiresAt,
+        screen_permissions:
+          role === "receptionist" ? uniqueScreens : [],
+        department_ids: departmentIds,
+        restrict_doctors: restrictDoctors,
+        doctor_ids: restrictDoctors ? doctorIds : [],
       });
+
     if (insertError) {
-      console.error("Invitation database error:", insertError);
-      invitationId = null;
+      console.error("Invitation insert:", insertError);
       return {
         success: false,
         message: "Could not save the invitation.",
       };
     }
-    // 14. Prepare EmailJS template parameters
-    const templateParams = {
-      to_name: normalizedName || "there",
-      to_email: normalizedEmail,
-      clinic_name: clinic.name,
-      staff_role: role,
-      accept_url: invitationConfirmUrl.toString(),
-    };
-    // 15. Send email using EmailJS
-    let emailResponse: Response;
-    try {
-      emailResponse = await fetch(
-        "https://api.emailjs.com/api/v1.0/email/send",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
+
+    // Send invitation email through EmailJS.
+    const emailResponse = await fetch(
+      "https://api.emailjs.com/api/v1.0/email/send",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          service_id: serviceId,
+          template_id: templateId,
+          user_id: publicKey,
+          accessToken: privateKey,
+          template_params: {
+            to_name: fullName,
+            to_email: email,
+            clinic_name: clinic.name,
+            staff_role: role,
+            accept_url: invitationLink,
           },
-          body: JSON.stringify({
-            service_id: emailjsServiceId,
-            template_id: emailjsTemplateId,
-            user_id: emailjsPublicKey,
-            accessToken: emailjsPrivateKey,
-            template_params: templateParams,
-          }),
-          cache: "no-store",
-        }
-      );
-    } catch (networkError) {
-      console.error("EmailJS network error:", networkError);
+        }),
+      }
+    );
+
+    if (!emailResponse.ok) {
+      const emailError = await emailResponse.text();
+      console.error("EmailJS error:", emailError);
+
       await admin
         .from("team_invitations")
         .update({ status: "cancelled" })
         .eq("id", invitationId);
+
       return {
         success: false,
-        message: "Unable to connect to the email service.",
+        message:
+          "Invitation was created but the email could not be sent. Please try again.",
       };
     }
-    const emailResponseText = await emailResponse.text();
-    console.log("EMAILJS RESPONSE:", {
-      status: emailResponse.status,
-      response: emailResponseText,
-      recipient: normalizedEmail,
-    });
-    // 16. Handle email failure
-    if (!emailResponse.ok) {
-      console.error("EmailJS sending failed:", emailResponseText);
-      const { error: cancelError } = await admin
-        .from("team_invitations")
-        .update({ status: "cancelled" })
-        .eq("id", invitationId);
-      if (cancelError) {
-        console.error("Invitation cancellation error:", cancelError);
-      }
-      return {
-        success: false,
-        message: `Email sending failed: ${emailResponseText}`,
-      };
-    }
-    // 17. Invitation created successfully
+
     return {
       success: true,
-      message: `Invitation sent successfully to ${normalizedEmail}.`,
-      invitationLink: invitationConfirmUrl.toString(),
+      message: "Invitation sent successfully.",
+      invitationLink,
     };
   } catch (error) {
-    console.error("Team invitation exception:", error);
-    if (admin && invitationId) {
-      await admin
-        .from("team_invitations")
-        .update({ status: "cancelled" })
-        .eq("id", invitationId)
-        .eq("status", "pending");
-    }
+    console.error("sendTeamInvitation error:", error);
+
     return {
       success: false,
       message: "Something went wrong while sending the invitation.",
