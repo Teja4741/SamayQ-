@@ -2,26 +2,30 @@
 import { Resend } from "resend";
 import { NextResponse } from "next/server";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 export async function POST() {
   try {
-    if (!process.env.RESEND_API_KEY) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const fromEmail = process.env.RESEND_FROM_EMAIL;
+
+    if (!apiKey) {
       return NextResponse.json(
         { success: false, error: "Resend API key is missing." },
         { status: 500 }
       );
     }
 
-    if (!process.env.RESEND_FROM_EMAIL) {
+    if (!fromEmail) {
       return NextResponse.json(
         { success: false, error: "Sender email is missing." },
         { status: 500 }
       );
     }
 
+    // Initialize Resend only when the API is called.
+    const resend = new Resend(apiKey);
+
     const { data, error } = await resend.emails.send({
-      from: process.env.RESEND_FROM_EMAIL,
+      from: fromEmail,
       to: ["vattesaiteja@gmail.com"],
       subject: "SamayQ - Email Test",
       html: `
@@ -49,6 +53,7 @@ export async function POST() {
       message: "Test email sent successfully!",
       data,
     });
+
   } catch (error) {
     console.error("Test email exception:", error);
 

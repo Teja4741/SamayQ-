@@ -15,7 +15,7 @@ import type {
   RoomDashboardData,
   RoomDashboardPatient,
   CreateRoomInput,
-} from "../types/index";
+} from "../types";
 
 import AddRoomForm from "./AddRoomForm";
 

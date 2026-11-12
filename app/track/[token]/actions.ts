@@ -6,13 +6,17 @@ import { createClient } from "@/lib/supabase/server";
 export type TrackingData = {
   success: boolean;
   message?: string;
+
   clinic?: {
     name: string;
     address: string | null;
     timezone: string;
   };
+
   booking?: {
     type: "doctor" | "department";
+    patient_name?: string | null;
+    visit_type?: string | null;
     doctor_name: string | null;
     specialization: string | null;
     department_name: string | null;
@@ -20,6 +24,7 @@ export type TrackingData = {
     appointment_time: string;
     appointment_status: string;
   };
+
   queue?: {
     status: string;
     token_number: number | null;
@@ -54,6 +59,13 @@ export async function getPublicAppointmentTracking(
       return {
         success: false,
         message: "Unable to load appointment tracking.",
+      };
+    }
+
+    if (!data) {
+      return {
+        success: false,
+        message: "Tracking information not found.",
       };
     }
 
