@@ -176,13 +176,15 @@ export async function sendTeamInvitation(
         };
       }
     }
-    // 5. Verify clinic and retrieve booking mode
+    // 5. Verify clinic
     admin = createAdminClient();
+
     const { data: clinic, error: clinicError } = await admin
       .from("clinics")
-      .select("id, name, is_active, booking_mode")
+      .select("id, name, is_active")
       .eq("id", clinicId)
       .maybeSingle();
+
     if (clinicError) {
       console.error("Clinic validation error:", clinicError);
       return {
@@ -190,18 +192,39 @@ export async function sendTeamInvitation(
         message: "Unable to verify the clinic.",
       };
     }
+
     if (!clinic || !clinic.is_active) {
       return {
         success: false,
         message: "Clinic not found or inactive.",
       };
     }
-    // 6. Doctors can only be invited to doctor-wise clinics
-    if (role === "doctor" && clinic.booking_mode !== "doctor") {
+
+    // 6. Read the actual booking configuration
+    const { data: clinicSettings, error: settingsError } = await admin
+      .from("clinic_settings")
+      .select(
+        "booking_mode, doctor_booking_enabled, department_booking_enabled"
+      )
+      .eq("clinic_id", clinicId)
+      .maybeSingle();
+
+    if (settingsError) {
+      console.error("Settings validation error:", settingsError);
+      return {
+        success: false,
+        message: "Unable to verify clinic booking settings.",
+      };
+    }
+
+    if (
+      role === "doctor" &&
+      clinicSettings?.doctor_booking_enabled !== true
+    ) {
       return {
         success: false,
         message:
-          "Doctors can only be invited to doctor-wise clinics.",
+          "Doctor invitations require doctor-wise booking to be enabled.",
       };
     }
     // 7. Verify EmailJS configuration
