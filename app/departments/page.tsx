@@ -75,16 +75,16 @@ async function authorizeClinic(clinicId: string) {
   if (!platformAdmin) {
     const { data: membership, error } = await supabase
       .from("clinic_memberships")
-      .select("id")
+      .select("id, role")
       .eq("user_id", user.id)
       .eq("clinic_id", clinicId)
-      .eq("role", "administrator")
+      .in("role", ["administrator", "receptionist"])
       .eq("is_active", true)
       .maybeSingle();
 
     if (error || !membership) {
       throw new Error(
-        "You are not authorized to manage this clinic."
+        "You are not authorized to manage this clinic's departments."
       );
     }
   }
@@ -189,7 +189,6 @@ async function synchronizeDepartmentQueue(
     isActive?: boolean;
   }
 ) {
-  // Verify department using authenticated client.
   const { data: department, error: departmentError } =
     await supabase
       .from("departments")
@@ -213,10 +212,8 @@ async function synchronizeDepartmentQueue(
 
   const isActive = options?.isActive ?? department.is_active;
 
-  // Use service-role client for queue operations.
   const queueAdmin = createAdminClient();
 
-  // Check existing queue using admin client.
   const { data: existingQueues, error: queueFetchError } =
     await queueAdmin
       .from("queues")
@@ -230,7 +227,6 @@ async function synchronizeDepartmentQueue(
     );
   }
 
-  // Synchronize existing queue.
   if (existingQueues && existingQueues.length > 0) {
     const { error: updateError } = await queueAdmin
       .from("queues")
@@ -248,11 +244,9 @@ async function synchronizeDepartmentQueue(
       );
     }
 
-    // Preserve existing token numbering.
     return;
   }
 
-  // Create new queue.
   const { error: insertError } = await queueAdmin
     .from("queues")
     .insert({
@@ -338,7 +332,6 @@ async function createDepartment(
       }
     );
   } catch (queueError) {
-    // Rollback department if queue creation fails.
     const { error: rollbackError } = await supabase
       .from("departments")
       .delete()
@@ -538,9 +531,32 @@ async function DepartmentsContent({
 
   const isMasterAdmin = Boolean(platformAdmin);
 
+  // Fetch active administrator and receptionist memberships.
+  const { data: memberships, error: membershipError } =
+    await supabase
+      .from("clinic_memberships")
+      .select("clinic_id, role")
+      .eq("user_id", user.id)
+      .in("role", ["administrator", "receptionist"])
+      .eq("is_active", true);
+
+  if (membershipError) {
+    throw new Error(membershipError.message);
+  }
+
+  const hasAdministratorRole =
+    memberships?.some((m) => m.role === "administrator") ?? false;
+
+  const hasReceptionistRole =
+    memberships?.some((m) => m.role === "receptionist") ?? false;
+
   const role: NavbarRole = isMasterAdmin
     ? "master_admin"
-    : "clinic_admin";
+    : hasAdministratorRole
+      ? "clinic_admin"
+      : hasReceptionistRole
+        ? "receptionist"
+        : "doctor";
 
   const params = await searchParams;
 
@@ -552,14 +568,7 @@ async function DepartmentsContent({
         ? params.clinicId
         : null;
   } else {
-    const { data: memberships, error } = await supabase
-      .from("clinic_memberships")
-      .select("clinic_id")
-      .eq("user_id", user.id)
-      .eq("role", "administrator")
-      .eq("is_active", true);
-
-    if (error || !memberships || memberships.length !== 1) {
+    if (!memberships || memberships.length !== 1) {
       return (
         <>
           <Navbar
@@ -574,7 +583,7 @@ async function DepartmentsContent({
 
             <p className="mt-2 text-slate-600">
               Your account must have exactly one active
-              administrator clinic membership.
+              administrator or receptionist clinic membership.
             </p>
           </main>
         </>
@@ -603,6 +612,19 @@ async function DepartmentsContent({
         </main>
       </>
     );
+  }
+
+  // Verify clinic membership for non-platform admins.
+  if (!isMasterAdmin) {
+    const authorizedMembership = memberships?.find(
+      (m) => m.clinic_id === clinicId
+    );
+
+    if (!authorizedMembership) {
+      throw new Error(
+        "You are not authorized to access this clinic."
+      );
+    }
   }
 
   const { data: clinic, error: clinicError } =
